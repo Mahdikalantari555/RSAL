@@ -71,6 +71,10 @@ Production: `npm run build && npm start`. Quality gates: `npm run typecheck`,
 From the repo root: `docker compose up -d --build` starts the API on `:8000`
 and this frontend on `:3000` (`RSAL_API_URL=http://api:8000`). The image is a
 multi-stage build running the Next.js standalone server as a non-root user.
+`npm ci` uses long fetch timeouts/retries and a BuildKit cache mount; on a slow
+or restricted network set `NPM_REGISTRY` in the root `.env` (or
+`--build-arg NPM_REGISTRY=...`) to build through a mirror. The lockfile already
+includes the Alpine/musl native binaries, so no extra system packages are needed.
 
 ## End-to-end smoke test
 

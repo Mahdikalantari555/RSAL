@@ -47,6 +47,31 @@ docker compose --profile postgres up -d
 # ...and set DATABASE_URL=postgresql+asyncpg://rsal:rsal@db:5432/rsal on the api service
 ```
 
+Requires Docker with BuildKit (the default on Docker 23+ / Compose v2). The API
+image installs the fully pinned [`requirements.lock.txt`](requirements.lock.txt)
+for reproducible builds and includes `libgomp1` (needed by LightGBM). The
+frontend waits for the API healthcheck before starting.
+
+### Slow or restricted networks
+
+If a build fails with pip errors like
+`Could not find a version that satisfies the requirement numpy` /
+`(from versions: none)`, or npm stalls, it is almost always a network timeout
+fetching the package index — not a bad dependency. The images already use long
+timeouts, automatic retries, and BuildKit cache mounts (so a re-run reuses
+downloaded packages). If it still fails, build through a mirror by putting this
+in a `.env` file next to `docker-compose.yml` (see [`.env.example`](.env.example)):
+
+```bash
+PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple   # any PyPI mirror you trust
+NPM_REGISTRY=https://registry.npmmirror.com              # any npm mirror you trust
+```
+
+then `docker compose up -d --build` again. To refresh the pinned API
+dependencies after editing `requirements.txt`, regenerate the lock from a clean
+resolve (`pip install --dry-run --ignore-installed --report r.json -r requirements.txt`,
+then pin the reported `name==version` set into `requirements.lock.txt`).
+
 ## The active learning loop
 
 1. **Create a project** with its class list:
