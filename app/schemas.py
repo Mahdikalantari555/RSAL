@@ -68,6 +68,9 @@ class DatasetOut(BaseModel):
     nodata: float | None
     bounds: list[float] | None
     created_at: datetime
+    # Computed metadata for clients (frontend rendering / progress display).
+    size_bytes: int = 0
+    patch_grid: dict | None = None
 
 
 # ---------------------------------------------------------------- labels

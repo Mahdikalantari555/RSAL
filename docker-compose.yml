@@ -12,6 +12,16 @@ services:
       - rsal-data:/data
     restart: unless-stopped
 
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    environment:
+      RSAL_API_URL: http://api:8000
+    depends_on:
+      - api
+    restart: unless-stopped
+
   # Optional: production-style database. Enable with:
   #   docker compose --profile postgres up -d
   # and set DATABASE_URL on the api service as shown above.

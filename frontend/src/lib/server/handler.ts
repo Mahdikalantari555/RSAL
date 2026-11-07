@@ -1,0 +1,551 @@
+/**
+ * TerraLab API routes, backed exclusively by the RSAL FastAPI service.
+ * This adapter translates between the browser-facing shapes in @/types and
+ * the RSAL contract (projects / dataset / labels / query / train / metrics).
+ */
+import { NextRequest, NextResponse } from 'next/server';
+import type {
+  Bounds,
+  Dataset,
+  Iteration,
+  LabelInput,
+  Metrics,
+  Project,
+  Sample,
+} from '@/types';
+import { classesFromNames, CLASS_COLORS } from '@/lib/palette';
+import {
+  ApiError,
+  rsalFetch,
+  rsalGet,
+  rsalGetOptional,
+  rsalPost,
+  type RsalDataset,
+  type RsalLabel,
+  type RsalMetrics,
+  type RsalProject,
+  type RsalQueryResponse,
+  type RsalTrainResponse,
+} from './rsal';
+import {
+  datasetBounds,
+  fromWgs84,
+  invertAffine,
+  isGeoreferenced,
+  labelToDisplay,
+  pixelRectToDisplay,
+  pixelToDisplay,
+} from './geo';
+
+type Context = { params: Promise<{ id?: string; action?: string; itemId?: string }> };
+
+const pid = (id: string) => {
+  if (!/^\d+$/.test(id)) throw new ApiError('Project not found.', 404);
+  return id;
+};
+
+// ------------------------------------------------------------- translations
+function toIteration(m: RsalMetrics, previousSamples: number): Iteration {
+  return {
+    id: String(m.id),
+    projectId: String(m.project_id),
+    number: m.iteration,
+    accuracy: m.accuracy,
+    f1: m.f1_macro,
+    sampleCount: Math.max(0, m.n_samples - previousSamples),
+    labeledCount: m.n_samples,
+    createdAt: m.created_at,
+  };
+}
+
+function toDataset(d: RsalDataset): Dataset {
+  const geoBounds = datasetBounds(d);
+  const res = d.transform
+    ? `${Math.abs(d.transform[0]).toLocaleString('en', { maximumFractionDigits: 6 })} ${
+        d.crs === 'EPSG:4326' ? '°' : 'm'
+      }`
+    : 'Unknown';
+  return {
+    id: String(d.id),
+    projectId: String(d.project_id),
+    name: d.filename,
+    size: d.size_bytes,
+    bands: d.bands,
+    width: d.width,
+    height: d.height,
+    resolution: res,
+    crs: d.crs ?? 'Not georeferenced',
+    bounds: geoBounds ?? [0, 0, d.width, d.height],
+    pixelSpace: !geoBounds,
+    url: `/api/projects/${d.project_id}/dataset/${d.id}/file`,
+    previewUrl: null,
+    createdAt: d.created_at,
+  };
+}
+
+async function projectStats(p: RsalProject): Promise<Project> {
+  const base = `/projects/${p.id}`;
+  const [metrics, labels, datasets] = await Promise.all([
+    rsalGetOptional<RsalMetrics>(`${base}/metrics`),
+    rsalGet<RsalLabel[]>(`${base}/labels`),
+    rsalGet<RsalDataset[]>(`${base}/dataset`),
+  ]);
+  const status: Project['status'] =
+    p.status === 'completed' ? 'completed' : labels.length > 0 ? 'in_progress' : 'unlabeled';
+  return {
+    id: String(p.id),
+    name: p.name,
+    description: p.description,
+    status,
+    classes: classesFromNames(p.classes),
+    createdAt: p.created_at,
+    iteration: metrics?.iteration ?? 0,
+    accuracy: metrics?.accuracy ?? 0,
+    f1: metrics?.f1_macro ?? 0,
+    labeledCount: labels.length,
+    totalSamples: datasets.reduce((a, d) => a + (d.patch_grid?.total_patches ?? 0), 0),
+    modelVersion: metrics ? `${metrics.model_type} · iteration ${metrics.iteration}` : '',
+  };
+}
+
+function emptyProject(p: RsalProject): Project {
+  return {
+    id: String(p.id),
+    name: p.name,
+    description: p.description,
+    status: 'unlabeled',
+    classes: classesFromNames(p.classes),
+    createdAt: p.created_at,
+    iteration: 0,
+    accuracy: 0,
+    f1: 0,
+    labeledCount: 0,
+    totalSamples: 0,
+    modelVersion: '',
+  };
+}
+
+const PATCH_ID = /^d(\d+)_r(\d+)_c(\d+)$/;
+
+function savedLabelToSample(
+  label: RsalLabel,
+  projectId: string,
+  datasets: RsalDataset[],
+): Sample | null {
+  const dataset = datasets.find((d) => d.id === label.dataset_id);
+  const display = labelToDisplay(dataset, label.geometry, label.coordinate_space);
+  if (!display) return null;
+  let pixel: Sample['pixel'];
+  if (label.geometry.type === 'Point') {
+    const [x, y] = (label.geometry.coordinates as number[]).map(Number);
+    if (label.coordinate_space === 'pixel') pixel = { x, y };
+    else if (dataset?.transform) {
+      const [col, row] = invertAffine(dataset.transform, x, y);
+      pixel = { x: col, y: row };
+    }
+  }
+  return {
+    id: label.sample_id,
+    projectId,
+    lat: display.lat,
+    lng: display.lng,
+    prediction: label.class_name,
+    confidence: 1,
+    uncertainty: 0,
+    status: 'labeled',
+    label: label.class_name,
+    note: '',
+    iteration: label.iteration,
+    batchIndex: 1000,
+    geometry: display.geometry.type === 'Polygon' ? display.geometry : null,
+    source: 'import', // saved labels stay out of the active review queue
+    datasetId: label.dataset_id != null ? String(label.dataset_id) : undefined,
+    pixel,
+    saved: true,
+  };
+}
+
+/** Convert a browser label draft into an RSAL LabelCreate payload. */
+function toRsalLabel(
+  input: LabelInput,
+  iteration: number,
+  datasets: RsalDataset[],
+): Record<string, unknown> {
+  const className = input.label;
+  if (!className) throw new ApiError('Every submitted label needs a class.');
+  const payload: Record<string, unknown> = {
+    class_name: className,
+    iteration,
+  };
+  const patch = PATCH_ID.exec(input.sampleId);
+  if (patch) {
+    // Review-queue sample: address the exact patch by id + pixel center.
+    const dataset = datasets.find((d) => d.id === Number(patch[1]));
+    if (!dataset) throw new ApiError(`Dataset ${patch[1]} no longer exists.`, 409);
+    if (!input.pixel)
+      throw new ApiError('This sample is missing its pixel location; query a fresh batch.');
+    payload.sample_id = input.sampleId;
+    payload.dataset_id = dataset.id;
+    payload.coordinate_space = 'pixel';
+    payload.geometry = { type: 'Point', coordinates: [input.pixel.x, input.pixel.y] };
+    return payload;
+  }
+
+  const dataset = input.datasetId
+    ? datasets.find((d) => String(d.id) === input.datasetId)
+    : datasets[datasets.length - 1];
+  if (!dataset)
+    throw new ApiError('Upload a GeoTIFF before adding labels.', 409);
+  payload.dataset_id = dataset.id;
+  // Saved samples (import-, pt_, poly_) keep their id so re-submission stores a
+  // corrected version; fresh manual drafts let RSAL derive the canonical id.
+  if (!input.sampleId.startsWith('manual-')) payload.sample_id = input.sampleId;
+
+  const geometry = input.geometry ??
+    (input.lat !== undefined && input.lng !== undefined
+      ? { type: 'Point' as const, coordinates: [input.lng, input.lat] }
+      : null);
+  if (!geometry) throw new ApiError('Every label needs a location.');
+
+  const convertPair = (lng: number, lat: number): [number, number] => {
+    if (!isGeoreferenced(dataset)) {
+      // CRS.Simple display space: lng = x, lat = height - y.
+      return [lng, dataset.height - lat];
+    }
+    const map = fromWgs84(dataset, lng, lat);
+    if (!map) throw new ApiError('Could not reproject this label into the dataset CRS.', 422);
+    return map;
+  };
+  payload.coordinate_space = isGeoreferenced(dataset) ? 'map' : 'pixel';
+  if (geometry.type === 'Point') {
+    const [lng, lat] = geometry.coordinates as number[];
+    payload.geometry = { type: 'Point', coordinates: convertPair(lng, lat) };
+  } else {
+    const rings = geometry.coordinates as number[][][];
+    payload.geometry = {
+      type: 'Polygon',
+      coordinates: rings.map((ring) => ring.map(([lng, lat]) => convertPair(lng, lat))),
+    };
+  }
+  return payload;
+}
+
+const STRATEGIES: Record<string, { strategy: string; method?: string }> = {
+  entropy: { strategy: 'uncertainty', method: 'entropy' },
+  margin: { strategy: 'uncertainty', method: 'margin' },
+  'least-confidence': { strategy: 'uncertainty', method: 'least_confidence' },
+  diversity: { strategy: 'diversity' },
+  hybrid: { strategy: 'hybrid', method: 'entropy' },
+};
+
+// ------------------------------------------------------------------ helpers
+async function getDatasets(projectId: string): Promise<RsalDataset[]> {
+  return rsalGet<RsalDataset[]>(`/projects/${pid(projectId)}/dataset`);
+}
+
+function json(data: unknown, status = 200) {
+  return NextResponse.json(data, { status });
+}
+
+async function handle(fn: () => Promise<NextResponse>): Promise<NextResponse> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof ApiError) return json({ error: error.message }, error.status);
+    if (error instanceof SyntaxError)
+      return json({ error: 'The request body is not valid JSON.' }, 400);
+    console.error('[TerraLab API]', error);
+    return json({ error: 'We could not complete this request. Please try again.' }, 500);
+  }
+}
+
+// ------------------------------------------------------------------ routes
+export async function healthHandler(): Promise<NextResponse> {
+  return handle(async () => {
+    try {
+      const data = await rsalGet<{ status: string; version: string }>('/health');
+      return json({ ok: data.status === 'ok', backend: data.version });
+    } catch (error) {
+      return json(
+        { ok: false, error: error instanceof Error ? error.message : 'Backend unavailable.' },
+        502,
+      );
+    }
+  });
+}
+
+export async function projectsHandler(request: NextRequest): Promise<NextResponse> {
+  return handle(async () => {
+    if (request.method === 'GET') {
+      const projects = await rsalGet<RsalProject[]>('/projects');
+      return json(await Promise.all(projects.map(projectStats)));
+    }
+    const body = await request.json();
+    const names: string[] = Array.isArray(body.classes)
+      ? body.classes.map((c: { name?: string } | string) =>
+          typeof c === 'string' ? c : (c.name ?? ''),
+        )
+      : [];
+    const created = await rsalPost<RsalProject>('/projects', {
+      name: body.name,
+      description: body.description ?? '',
+      classes: names,
+    });
+    return json(emptyProject(created), 201);
+  });
+}
+
+export async function projectHandler(
+  request: NextRequest,
+  context: Context,
+): Promise<NextResponse> {
+  return handle(async () => {
+    const { id = '' } = await context.params;
+    if (request.method === 'DELETE') {
+      const response = await rsalFetch(`/projects/${pid(id)}`, { method: 'DELETE' });
+      if (!response.ok && response.status !== 204)
+        throw new ApiError('The project could not be deleted.', response.status);
+      return json({ deleted: true });
+    }
+    const project = await rsalGet<RsalProject>(`/projects/${pid(id)}`);
+    return json(await projectStats(project));
+  });
+}
+
+export async function datasetListHandler(
+  _request: NextRequest,
+  context: Context,
+): Promise<NextResponse> {
+  return handle(async () => {
+    const { id = '' } = await context.params;
+    return json((await getDatasets(id)).map(toDataset));
+  });
+}
+
+export async function datasetItemHandler(
+  request: NextRequest,
+  context: Context,
+): Promise<NextResponse> {
+  return handle(async () => {
+    const { id = '', itemId = '' } = await context.params;
+    const path = `/projects/${pid(id)}/dataset/${encodeURIComponent(itemId)}`;
+    if (request.method === 'DELETE') {
+      const response = await rsalFetch(path, { method: 'DELETE' });
+      if (!response.ok && response.status !== 204) {
+        const data = await response.json().catch(() => null);
+        throw new ApiError(data?.detail ?? 'The dataset could not be deleted.', response.status);
+      }
+      return json({ deleted: true });
+    }
+    return json(toDataset(await rsalGet<RsalDataset>(path)));
+  });
+}
+
+export async function datasetFileHandler(
+  _request: NextRequest,
+  context: Context,
+): Promise<NextResponse> {
+  return handle(async () => {
+    const { id = '', itemId = '' } = await context.params;
+    const response = await rsalFetch(
+      `/projects/${pid(id)}/dataset/${encodeURIComponent(itemId)}/file`,
+    );
+    if (!response.ok) {
+      const data = await response.json().catch(() => null);
+      throw new ApiError(data?.detail ?? 'The raster file could not be loaded.', response.status);
+    }
+    return new NextResponse(response.body, {
+      headers: {
+        'content-type': response.headers.get('content-type') ?? 'image/tiff',
+        'cache-control': 'private, max-age=3600',
+        'x-content-type-options': 'nosniff',
+      },
+    });
+  });
+}
+
+export async function actionHandler(
+  request: NextRequest,
+  context: Context,
+): Promise<NextResponse> {
+  return handle(async () => {
+    const { id = '', action = '' } = await context.params;
+    const base = `/projects/${pid(id)}`;
+    const method = request.method;
+
+    if (action === 'metrics' && method === 'GET') {
+      const [project, latest, history, labels, datasets] = await Promise.all([
+        rsalGet<RsalProject>(base),
+        rsalGetOptional<RsalMetrics>(`${base}/metrics`),
+        rsalGet<RsalMetrics[]>(`${base}/metrics/history`),
+        rsalGet<RsalLabel[]>(`${base}/labels`),
+        getDatasets(id),
+      ]);
+      const classes = classesFromNames(project.classes);
+      const counts = new Map<string, number>(project.classes.map((c) => [c, 0]));
+      for (const label of labels)
+        counts.set(label.class_name, (counts.get(label.class_name) ?? 0) + 1);
+      const metrics: Metrics = {
+        accuracy: latest?.accuracy ?? 0,
+        f1: latest?.f1_macro ?? 0,
+        labeledCount: labels.length,
+        totalSamples: datasets.reduce((a, d) => a + (d.patch_grid?.total_patches ?? 0), 0),
+        iteration: latest?.iteration ?? 0,
+        curve: history.map((m, i) => toIteration(m, history[i - 1]?.n_samples ?? 0)),
+        distribution: classes.map((c) => ({
+          name: c.name,
+          color: c.color,
+          value: counts.get(c.id) ?? 0,
+        })),
+        confusionMatrix: latest?.confusion_matrix ?? [],
+        perClass: classes.map((c) => ({
+          name: c.name,
+          color: c.color,
+          precision: latest?.per_class?.[c.id]?.precision ?? 0,
+          recall: latest?.per_class?.[c.id]?.recall ?? 0,
+          f1: latest?.per_class?.[c.id]?.f1 ?? 0,
+          support: latest?.per_class?.[c.id]?.support ?? 0,
+        })),
+        evaluation: latest?.evaluation ?? '',
+      };
+      return json(metrics);
+    }
+
+    if (action === 'labels' && method === 'GET') {
+      const [labels, datasets] = await Promise.all([
+        rsalGet<RsalLabel[]>(`${base}/labels`),
+        getDatasets(id),
+      ]);
+      const samples = labels
+        .map((l) => savedLabelToSample(l, id, datasets))
+        .filter((s): s is Sample => s !== null);
+      return json(samples);
+    }
+
+    if (action === 'history' && method === 'GET')
+      return json(await rsalGet<RsalLabel[]>(`${base}/history`));
+
+    if (action === 'query' && method === 'POST') {
+      const body = await request.json();
+      const mapped = STRATEGIES[body.strategy ?? 'entropy'];
+      if (!mapped) throw new ApiError(`Unknown sampling strategy '${body.strategy}'.`);
+      const [result, datasets] = await Promise.all([
+        rsalPost<RsalQueryResponse>(`${base}/query`, {
+          strategy: mapped.strategy,
+          ...(mapped.method ? { method: mapped.method } : {}),
+          batch_size: Math.min(Math.max(Number(body.batchSize) || 12, 1), 10000),
+          ...(body.datasetId && /^\d+$/.test(String(body.datasetId))
+            ? { dataset_id: Number(body.datasetId) }
+            : {}),
+        }),
+        getDatasets(id),
+      ]);
+      const samples: Sample[] = result.samples.map((s, index) => {
+        const dataset = datasets.find((d) => d.id === s.dataset_id);
+        const display = dataset
+          ? pixelToDisplay(dataset, s.coords.center_x, s.coords.center_y)
+          : { lng: s.coords.center_x, lat: s.coords.center_y };
+        const bbox: Bounds | undefined = dataset
+          ? pixelRectToDisplay(dataset, s.coords.x0, s.coords.y0, s.coords.x1, s.coords.y1)
+          : undefined;
+        return {
+          id: s.sample_id,
+          projectId: id,
+          lat: display.lat,
+          lng: display.lng,
+          prediction: s.prediction ?? '',
+          confidence: s.confidence ?? 0,
+          uncertainty: s.uncertainty ?? 0,
+          status: 'pending',
+          label: null,
+          note: '',
+          iteration: result.model_iteration ?? 0,
+          batchIndex: index,
+          geometry: null,
+          source: 'query',
+          datasetId: String(s.dataset_id),
+          pixel: { x: s.coords.center_x, y: s.coords.center_y },
+          bbox,
+        };
+      });
+      return json({ samples, existing: false });
+    }
+
+    if (action === 'labels' && method === 'POST') {
+      const body = await request.json();
+      const inputs: LabelInput[] = Array.isArray(body.labels) ? body.labels : [];
+      const trainable = inputs.filter((l) => l.status === 'labeled' && l.label);
+      if (!trainable.length) return json({ saved: 0 });
+      const [metrics, datasets] = await Promise.all([
+        rsalGetOptional<RsalMetrics>(`${base}/metrics`),
+        getDatasets(id),
+      ]);
+      const labels = trainable.map((l) => toRsalLabel(l, metrics?.iteration ?? 0, datasets));
+      await rsalPost(`${base}/labels`, { labels });
+      return json({ saved: labels.length }, 201);
+    }
+
+    if (action === 'train' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const result = await rsalPost<RsalTrainResponse>(`${base}/train`, {
+        model_type: body.modelType === 'lightgbm' ? 'lightgbm' : 'rf',
+      });
+      const history = await rsalGetOptional<RsalMetrics[]>(`${base}/metrics/history`);
+      const previous = history?.filter((m) => m.id !== result.metrics.id).pop();
+      return json({ iteration: toIteration(result.metrics, previous?.n_samples ?? 0) }, 201);
+    }
+
+    if (action === 'upload' && method === 'POST') {
+      const form = await request.formData();
+      const file = form.get('file');
+      if (!(file instanceof File) || !/\.tiff?$/i.test(file.name))
+        throw new ApiError('Choose a .tif or .tiff GeoTIFF file.');
+      if (file.size === 0 || file.size > 100 * 1024 * 1024)
+        throw new ApiError('GeoTIFFs must be non-empty and smaller than 100 MB.');
+      const upstream = new FormData();
+      upstream.append('file', file, file.name);
+      const response = await rsalFetch(`${base}/upload`, { method: 'POST', body: upstream });
+      const data = await response.json().catch(() => null);
+      if (!response.ok)
+        throw new ApiError(
+          typeof data?.detail === 'string' ? data.detail : 'The upload could not be processed.',
+          response.status,
+        );
+      return json(toDataset(data as RsalDataset), 201);
+    }
+
+    throw new ApiError('Endpoint not found.', 404);
+  });
+}
+
+export async function itemHandler(
+  request: NextRequest,
+  context: Context,
+): Promise<NextResponse> {
+  return handle(async () => {
+    const { id = '', action = '', itemId = '' } = await context.params;
+    const base = `/projects/${pid(id)}`;
+    if (action === 'labels' && request.method === 'DELETE') {
+      const response = await rsalFetch(`${base}/labels/${encodeURIComponent(itemId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok && response.status !== 204) {
+        const data = await response.json().catch(() => null);
+        throw new ApiError(
+          typeof data?.detail === 'string' ? data.detail : 'The label could not be deleted.',
+          response.status,
+        );
+      }
+      return json({ deleted: true });
+    }
+    if (action === 'dataset' && request.method === 'DELETE') {
+      const response = await rsalFetch(`${base}/dataset/${encodeURIComponent(itemId)}`, {
+        method: 'DELETE',
+      });
+      if (!response.ok && response.status !== 204)
+        throw new ApiError('The dataset could not be deleted.', response.status);
+      return json({ deleted: true });
+    }
+    throw new ApiError('Endpoint not found.', 404);
+  });
+}
