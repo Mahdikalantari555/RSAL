@@ -1,0 +1,35 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      STORAGE_DIR: /data/storage
+      # SQLite by default (inside the volume). For Postgres, start the
+      # `postgres` profile and set:
+      # DATABASE_URL: postgresql+asyncpg://rsal:rsal@db:5432/rsal
+    volumes:
+      - rsal-data:/data
+    restart: unless-stopped
+
+  # Optional: production-style database. Enable with:
+  #   docker compose --profile postgres up -d
+  # and set DATABASE_URL on the api service as shown above.
+  db:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: rsal
+      POSTGRES_PASSWORD: rsal
+      POSTGRES_DB: rsal
+    volumes:
+      - rsal-pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rsal"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  rsal-data:
+  rsal-pg:
