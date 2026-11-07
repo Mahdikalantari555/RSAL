@@ -1,19 +1,25 @@
-# RSAL Backend
+# RSAL — satellite active learning
 
-Active Learning satellite image classification backend, implemented from the
-OpenSpec change proposal in [`openspec/changes/rsal-backend/`](openspec/changes/rsal-backend/).
+Active Learning satellite image classification: a FastAPI backend plus the
+**TerraLab** web workspace, implemented from the OpenSpec change proposals in
+[`openspec/changes/rsal-backend/`](openspec/changes/rsal-backend/) and
+[`openspec/changes/add-terralab-frontend/`](openspec/changes/add-terralab-frontend/).
 
-FastAPI + async SQLAlchemy (SQLite by default, Postgres via env) + rasterio +
-scikit-learn / LightGBM. Training is synchronous (MVP); heavy raster/ML work runs
-in a worker thread so the event loop stays responsive.
+Backend: FastAPI + async SQLAlchemy (SQLite by default, Postgres via env) +
+rasterio + scikit-learn / LightGBM. Training is synchronous (MVP); heavy
+raster/ML work runs in a worker thread so the event loop stays responsive.
+
+Frontend: Next.js (App Router) workspace in [`frontend/`](frontend/) — map-based
+labeling, batch review with keyboard shortcuts, real training analytics. It
+talks to the backend through a server-side adapter; there is no demo mode.
 
 ## Capabilities
 
 | Capability | Endpoints |
 |---|---|
 | Project management | `POST/GET /projects`, `GET/PUT/DELETE /projects/{id}` |
-| Dataset ingestion | `POST /projects/{id}/upload` (GeoTIFF), `GET /projects/{id}/dataset` |
-| Label management | `POST/GET /projects/{id}/labels`, `GET /projects/{id}/history` |
+| Dataset ingestion | `POST /projects/{id}/upload` (GeoTIFF), `GET /projects/{id}/dataset`, `GET .../dataset/{did}/file`, `DELETE .../dataset/{did}` |
+| Label management | `POST/GET /projects/{id}/labels`, `GET /projects/{id}/history`, `DELETE /projects/{id}/labels/{sample_id}` |
 | Active learning query | `POST /projects/{id}/query` (uncertainty / diversity / hybrid) |
 | Model training | `POST /projects/{id}/train` (rf / lightgbm), `GET /projects/{id}/metrics` |
 | Inference & export | `POST /projects/{id}/predict`, `GET /projects/{id}/download/{hard\|probability}` |
@@ -35,7 +41,7 @@ The database and storage directories are created on startup under `STORAGE_DIR`
 ## Quickstart (Docker)
 
 ```bash
-docker compose up -d --build          # API on :8000, data in a named volume
+docker compose up -d --build          # API on :8000 + TerraLab UI on :3000
 # Optional Postgres:
 docker compose --profile postgres up -d
 # ...and set DATABASE_URL=postgresql+asyncpg://rsal:rsal@db:5432/rsal on the api service
@@ -91,6 +97,23 @@ A full scripted walkthrough against a running server:
 .venv/bin/python scripts/demo.py --base-url http://localhost:8000
 ```
 
+## Frontend — TerraLab
+
+```bash
+cd frontend
+npm install
+npm run dev            # http://localhost:3000 (backend expected on :8000)
+```
+
+Set `RSAL_API_URL` (and optionally `RSAL_API_TOKEN`) to point at your backend;
+see [`frontend/README.md`](frontend/README.md) for features, architecture, and
+Docker usage. With both services running, the browser-facing adapter is
+verified end-to-end by:
+
+```bash
+.venv/bin/python scripts/frontend_smoke.py --base http://localhost:3000
+```
+
 ## Design decisions (resolving the proposal's open questions)
 
 - **Patch grid**: 32×32 px windows, stride = patch size (non-overlapping) by
@@ -119,8 +142,11 @@ app/
   storage.py         # STORAGE_DIR layout helpers
   api/               # routers: projects, datasets, labels, query, training, inference
   services/          # raster/grid, AL strategies, label resolution, training, export
-tests/               # 73 tests: unit (AL math, raster helpers) + API scenarios
-scripts/demo.py      # end-to-end AL loop against a live server
+tests/               # 82 tests: unit (AL math, raster helpers) + API scenarios
+scripts/demo.py      # end-to-end AL loop against a live backend
+scripts/frontend_smoke.py  # end-to-end loop through the frontend adapter
+frontend/            # TerraLab Next.js workspace (see frontend/README.md)
+openspec/            # spec-driven change proposals + capability specs
 ```
 
 ## Tests
@@ -129,7 +155,9 @@ scripts/demo.py      # end-to-end AL loop against a live server
 .venv/bin/python -m pytest
 ```
 
-Covers every OpenSpec scenario: project CRUD + 404s, GeoTIFF metadata (multi-band),
-label submission/correction/history, all three query strategies + batch semantics,
-RF/LightGBM training + checkpoints + metrics, region inference, and GeoTIFF exports
-(validated by re-opening with rasterio).
+82 tests covering every OpenSpec scenario: project CRUD + 404s, GeoTIFF metadata
+(multi-band), label submission/correction/history/deletion, all three query
+strategies + batch semantics, RF/LightGBM training + checkpoints + metrics,
+region inference, GeoTIFF exports (validated by re-opening with rasterio), and
+the frontend support endpoints (file download, computed metadata, cascading
+dataset delete).

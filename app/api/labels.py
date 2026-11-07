@@ -143,3 +143,18 @@ async def label_history(project_id: int, session: SessionDep) -> list[Label]:
     """Full label history for the project (all samples, all versions)."""
     await get_project(session, project_id)
     return await project_labels(session, project_id)
+
+
+@router.delete("/labels/{sample_id}", status_code=204)
+async def delete_sample_labels(project_id: int, sample_id: str, session: SessionDep) -> None:
+    """Delete every label version of a sample within the project."""
+    await get_project(session, project_id)
+    result = await session.execute(
+        select(Label).where(Label.project_id == project_id, Label.sample_id == sample_id)
+    )
+    labels = result.scalars().all()
+    if not labels:
+        raise HTTPException(status_code=404, detail=f"No labels for sample '{sample_id}'")
+    for label in labels:
+        await session.delete(label)
+    await session.commit()
