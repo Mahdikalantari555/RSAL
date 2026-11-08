@@ -5,7 +5,13 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/utils';
 import { useReviewQueue } from '@/stores/review-queue';
-import type { CreateProjectInput, LabelInput, Sample, SomQueryOptions } from '@/types';
+import type {
+  CreateProjectInput,
+  LabelInput,
+  Sample,
+  SomClassifyInput,
+  SomQueryOptions,
+} from '@/types';
 export const keys = {
   projects: ['projects'] as const,
   dataset: (id: string) => ['project', id, 'dataset'] as const,
@@ -13,6 +19,18 @@ export const keys = {
   metrics: (id: string) => ['project', id, 'metrics'] as const,
   som: (id: string, datasetId?: string, size?: number) =>
     ['project', id, 'som', datasetId ?? 'latest', size ?? 'auto'] as const,
+  somClassify: (id: string, input: SomClassifyInput) =>
+    [
+      'project',
+      id,
+      'som-classify',
+      input.datasetId ?? 'latest',
+      input.rows,
+      input.cols,
+      input.nClusters ?? 'neurons',
+      input.epochs ?? 50,
+      input.resolution ?? 'pixel',
+    ] as const,
 };
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: api.projects });
@@ -71,6 +89,18 @@ export function useSom(
         cols: size,
       }),
     enabled: !!id && (options?.enabled ?? true),
+  });
+}
+export function useUnsupervisedSom(
+  id: string,
+  input: SomClassifyInput,
+  enabled = true,
+) {
+  return useQuery({
+    queryKey: keys.somClassify(id, input),
+    queryFn: () => api.somClassify(id, input),
+    enabled: !!id && enabled,
+    staleTime: Infinity,
   });
 }
 export function useCreateProject() {

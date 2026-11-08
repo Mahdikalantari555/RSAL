@@ -32,7 +32,7 @@ from .deps import (
 
 router = APIRouter(prefix="/projects/{project_id}", tags=["inference"])
 
-EXPORT_TYPES = {"hard": "hard", "probability": "probability", "prob": "probability"}
+EXPORT_TYPES = {"hard": "hard", "probability": "probability", "prob": "probability", "som": "som"}
 
 
 async def _run_inference(session, settings, project, dataset: Dataset, region: Region | None, iteration: int | None):
@@ -151,7 +151,10 @@ async def download(
     """
     project = await get_project(session, project_id)
     if export_type not in EXPORT_TYPES:
-        raise HTTPException(status_code=404, detail=f"Unknown export type '{export_type}'; use hard or probability")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown export type '{export_type}'; use hard, probability, or som",
+        )
     etype = EXPORT_TYPES[export_type]
 
     stmt = (
@@ -166,18 +169,24 @@ async def download(
 
     if export is None or not _exists(export.path):
         dataset = await require_dataset(session, project_id, dataset_id)
-        run, region, grid, hard, prob, _, _ = await _run_inference(
-            session, settings, project, dataset, None, None
-        )
-        stmt = (
-            select(Export)
-            .where(Export.project_id == project_id, Export.type == etype, Export.dataset_id == dataset.id)
-            .order_by(Export.id.desc())
-            .limit(1)
-        )
-        export = (await session.execute(stmt)).scalar_one_or_none()
-        if export is None:
-            raise HTTPException(status_code=500, detail="Export failed")
+        if etype == "som":
+            from ..schemas import SomClassifyRequest
+            from .som import run_som_classification
+
+            export, _, _ = await run_som_classification(
+                session, settings, project, dataset, SomClassifyRequest(dataset_id=dataset.id)
+            )
+        else:
+            await _run_inference(session, settings, project, dataset, None, None)
+            stmt = (
+                select(Export)
+                .where(Export.project_id == project_id, Export.type == etype, Export.dataset_id == dataset.id)
+                .order_by(Export.id.desc())
+                .limit(1)
+            )
+            export = (await session.execute(stmt)).scalar_one_or_none()
+            if export is None:
+                raise HTTPException(status_code=500, detail="Export failed")
 
     return FileResponse(
         export.path,

@@ -119,3 +119,64 @@ export async function renderRaster(
   ctx.putImageData(pixels, 0, 0);
   return canvas.toDataURL('image/png');
 }
+
+export interface DecodedClusterRaster {
+  width: number;
+  height: number;
+  indices: Uint16Array;
+  noData: number;
+}
+
+export async function decodeClusterRaster(buffer: ArrayBuffer): Promise<DecodedClusterRaster> {
+  const tiff = await fromArrayBuffer(buffer);
+  const image = await tiff.getImage();
+  const ratio = Math.min(1, 1200 / Math.max(image.getWidth(), image.getHeight()));
+  const width = Math.max(1, Math.round(image.getWidth() * ratio));
+  const height = Math.max(1, Math.round(image.getHeight() * ratio));
+  const raster = await image.readRasters({
+    samples: [0],
+    width,
+    height,
+    resampleMethod: 'nearest',
+    interleave: false,
+  });
+  const raw = raster[0] as ArrayLike<number>;
+  const indices = new Uint16Array(width * height);
+  for (let i = 0; i < width * height; i++) indices[i] = Number(raw[i]);
+  const gdalNoData = image.getGDALNoData();
+  return {
+    width,
+    height,
+    indices,
+    noData: gdalNoData != null && Number.isFinite(Number(gdalNoData)) ? Number(gdalNoData) : 65535,
+  };
+}
+
+export function renderClusterOverlay(
+  decoded: DecodedClusterRaster,
+  colors: Record<number, [number, number, number]>,
+  visibleClusters?: Set<number> | null,
+): string {
+  const { width, height, indices, noData } = decoded;
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas rendering is unavailable in this browser.');
+  const pixels = ctx.createImageData(width, height);
+  for (let i = 0; i < width * height; i++) {
+    const cid = indices[i];
+    const base = i * 4;
+    if (cid === 65535 || cid === noData || (visibleClusters && !visibleClusters.has(cid))) {
+      pixels.data[base + 3] = 0;
+      continue;
+    }
+    const rgb = colors[cid] ?? [56, 142, 112];
+    pixels.data[base] = rgb[0];
+    pixels.data[base + 1] = rgb[1];
+    pixels.data[base + 2] = rgb[2];
+    pixels.data[base + 3] = 255;
+  }
+  ctx.putImageData(pixels, 0, 0);
+  return canvas.toDataURL('image/png');
+}

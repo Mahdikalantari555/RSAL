@@ -6,6 +6,7 @@ import {
   CircleHelp,
   Database,
   FolderPlus,
+  Grid2x2,
   LayoutGrid,
   Leaf,
   Moon,
@@ -23,6 +24,7 @@ import type { Project, WorkspaceView } from '@/types';
 const links: { id: WorkspaceView; label: string; icon: typeof LayoutGrid }[] = [
   { id: 'projects', label: 'Overview', icon: LayoutGrid },
   { id: 'datasets', label: 'Datasets', icon: Database },
+  { id: 'unsupervised', label: 'Unsupervised SOM', icon: Grid2x2 },
   { id: 'learning', label: 'Active learning', icon: ScanLine },
   { id: 'analytics', label: 'Analytics', icon: ChartNoAxesCombined },
 ];

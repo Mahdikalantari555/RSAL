@@ -1,15 +1,28 @@
-"""Self-Organizing Map (SOM) exploration endpoints."""
+"""Self-Organizing Map (SOM) exploration & unsupervised classification endpoints."""
 
 from __future__ import annotations
 
+import uuid
 from pathlib import Path
 
 import anyio
 import numpy as np
 from fastapi import APIRouter, Body, HTTPException, Query
+from fastapi.responses import FileResponse
+from sqlalchemy import select
 
-from ..schemas import SomCell, SomRequest, SomResponse
+from ..models import Dataset, Export, Project
+from ..schemas import (
+    Region,
+    SomCell,
+    SomClassifyRequest,
+    SomClassifyResponse,
+    SomClusterSummary,
+    SomRequest,
+    SomResponse,
+)
 from ..services.al_service import uncertainty_scores
+from ..services.inference_service import export_som_geotiff, grid_transform, pixel_transform
 from ..services.label_service import build_training_targets
 from ..services.raster_service import (
     RasterError,
@@ -18,8 +31,14 @@ from ..services.raster_service import (
     patch_features,
     sample_id,
 )
-from ..services.som_service import fit_som, normalized_band_profiles
+from ..services.som_service import (
+    UnsupervisedSomResult,
+    classify_unsupervised_som,
+    fit_som,
+    normalized_band_profiles,
+)
 from ..services.training_service import align_probabilities, load_checkpoint
+from ..storage import project_dir
 from .deps import (
     SessionDep,
     SettingsDep,
@@ -227,3 +246,172 @@ async def build_som(
 ) -> SomResponse:
     """Fit a custom-configured Self-Organizing Map over dataset patch embeddings."""
     return await _run_som(project_id, payload, session, settings)
+
+
+async def run_som_classification(
+    session: SessionDep,
+    settings: SettingsDep,
+    project: Project,
+    dataset: Dataset,
+    payload: SomClassifyRequest,
+) -> tuple[Export, Region, UnsupervisedSomResult]:
+    """Run unsupervised SOM image classification (no labels required) and export GeoTIFF."""
+    region = payload.region or Region(x0=0, y0=0, x1=dataset.width, y1=dataset.height)
+    if not (
+        0 <= region.x0 < region.x1 <= dataset.width
+        and 0 <= region.y0 < region.y1 <= dataset.height
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Region {region.model_dump()} outside dataset bounds {dataset.width}x{dataset.height}",
+        )
+
+    m_neurons = payload.rows * payload.cols
+    if payload.n_clusters is not None and payload.n_clusters > m_neurons:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"n_clusters ({payload.n_clusters}) cannot exceed SOM neuron count "
+                f"{payload.rows}x{payload.cols} ({m_neurons})"
+            ),
+        )
+
+    patch_size = payload.patch_size or settings.patch_size
+    stride = payload.stride or settings.resolved_stride()
+    export_dir = project_dir(settings, "exports", project.id)
+    som_path = export_dir / f"som_ds{dataset.id}_{uuid.uuid4().hex[:8]}.tif"
+
+    def _compute() -> UnsupervisedSomResult:
+        arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+        crop = arr[:, region.y0 : region.y1, region.x0 : region.x1]
+        if payload.resolution == "pixel":
+            flat = np.moveaxis(crop, 0, -1).reshape(-1, dataset.bands)
+            valid_mask = np.isfinite(flat).any(axis=1)
+            out_shape = (crop.shape[1], crop.shape[2])
+            transform = pixel_transform(dataset.transform, region.x0, region.y0)
+        else:
+            grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
+            flat = patch_features(crop, grid)
+            valid_mask = np.ones(len(flat), dtype=bool)
+            out_shape = grid.shape
+            transform = grid_transform(dataset.transform, grid, region.x0, region.y0, stride)
+
+        result = classify_unsupervised_som(
+            flat,
+            valid_mask,
+            out_shape,
+            dataset.bands,
+            rows=payload.rows,
+            cols=payload.cols,
+            n_clusters=payload.n_clusters,
+            epochs=payload.epochs,
+            sigma=payload.sigma,
+            learning_rate=payload.learning_rate,
+            max_train_samples=payload.max_train_samples,
+            random_state=settings.random_state,
+        )
+        cluster_labels = [c["label"] for c in result.clusters]
+        export_som_geotiff(
+            som_path,
+            result.cluster_map,
+            cluster_labels,
+            result.colors,
+            dataset.crs,
+            transform,
+        )
+        return result
+
+    try:
+        result = await anyio.to_thread.run_sync(_compute)
+    except RasterError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    export = Export(
+        project_id=project.id,
+        dataset_id=dataset.id,
+        training_run_id=None,
+        type="som",
+        path=str(som_path),
+        region=region.model_dump(),
+    )
+    session.add(export)
+    await session.commit()
+    await session.refresh(export)
+    return export, region, result
+
+
+@router.post("/som/classify", response_model=SomClassifyResponse)
+async def classify_som_endpoint(
+    project_id: int,
+    session: SessionDep,
+    settings: SettingsDep,
+    payload: SomClassifyRequest = Body(default_factory=SomClassifyRequest),
+) -> SomClassifyResponse:
+    """Unsupervised Self-Organizing Map image classification (no labels required).
+
+    Clusters pixels (or patches) directly from multi-band spectral values,
+    writes a georeferenced colormap GeoTIFF, and returns cluster statistics.
+    """
+    project = await get_project(session, project_id)
+    dataset = await require_dataset(session, project_id, payload.dataset_id)
+    export, region, result = await run_som_classification(
+        session, settings, project, dataset, payload
+    )
+    return SomClassifyResponse(
+        project_id=project.id,
+        dataset_id=dataset.id,
+        export_id=export.id,
+        rows=result.rows,
+        cols=result.cols,
+        epochs=result.epochs,
+        n_clusters=result.n_clusters,
+        resolution=payload.resolution,
+        region=region,
+        shape=list(result.cluster_map.shape),
+        total_valid=result.total_valid,
+        nodata_count=result.nodata_count,
+        quantization_error=result.quantization_error,
+        topographic_error=result.topographic_error,
+        u_matrix=[[float(v) for v in row] for row in result.u_matrix.tolist()],
+        neuron_clusters=[[int(v) for v in row] for row in result.neuron_clusters.tolist()],
+        neuron_hits=[[int(v) for v in row] for row in result.neuron_hits.tolist()],
+        clusters=[SomClusterSummary(**c) for c in result.clusters],
+        cluster_map=result.cluster_map.tolist() if payload.include_map else None,
+        exports={
+            "som": f"/projects/{project.id}/download/som?dataset_id={dataset.id}",
+        },
+    )
+
+
+@router.get("/som/download")
+async def download_som_map(
+    project_id: int,
+    session: SessionDep,
+    settings: SettingsDep,
+    dataset_id: int | None = Query(default=None),
+    export_id: int | None = Query(default=None),
+) -> FileResponse:
+    """Download an unsupervised SOM classification GeoTIFF (auto-computing if needed)."""
+    project = await get_project(session, project_id)
+
+    stmt = select(Export).where(Export.project_id == project_id, Export.type == "som")
+    if export_id is not None:
+        stmt = stmt.where(Export.id == export_id)
+    elif dataset_id is not None:
+        stmt = stmt.where(Export.dataset_id == dataset_id)
+    stmt = stmt.order_by(Export.id.desc()).limit(1)
+    export = (await session.execute(stmt)).scalar_one_or_none()
+
+    if export is None or not Path(export.path).exists():
+        dataset = await require_dataset(session, project_id, dataset_id)
+        export, _, _ = await run_som_classification(
+            session, settings, project, dataset, SomClassifyRequest(dataset_id=dataset.id)
+        )
+
+    return FileResponse(
+        export.path,
+        media_type="image/tiff",
+        filename=f"project_{project_id}_som_ds{export.dataset_id}.tif",
+    )

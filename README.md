@@ -21,9 +21,9 @@ talks to the backend through a server-side adapter; there is no demo mode.
 | Dataset ingestion | `POST /projects/{id}/upload` (GeoTIFF), `GET /projects/{id}/dataset`, `GET .../dataset/{did}/file`, `DELETE .../dataset/{did}` |
 | Label management | `POST/GET /projects/{id}/labels`, `GET /projects/{id}/history`, `DELETE /projects/{id}/labels/{sample_id}` |
 | Active learning query | `POST /projects/{id}/query` (uncertainty / diversity / hybrid / som) |
-| Self-organizing map | `GET/POST /projects/{id}/som` (Kohonen U-Matrix, cluster summaries, spectral prototypes) |
+| Unsupervised SOM | `POST /projects/{id}/som/classify` (pixel/patch spectral clustering + GeoTIFF), `GET/POST /projects/{id}/som` |
 | Model training | `POST /projects/{id}/train` (rf / lightgbm), `GET /projects/{id}/metrics` |
-| Inference & export | `POST /projects/{id}/predict`, `GET /projects/{id}/download/{hard\|probability}` |
+| Inference & export | `POST /projects/{id}/predict`, `GET /projects/{id}/download/{hard\|probability\|som}` |
 
 Interactive API docs: **`/docs`** (Swagger UI) and **`/redoc`**.
 
