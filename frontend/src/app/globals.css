@@ -1615,6 +1615,179 @@ kbd {
 .opacity-label strong {
   font-weight: 500;
 }
+.layer-panel {
+  max-height: calc(100% - 80px);
+  overflow-y: auto;
+}
+.layer-divider {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 12px;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+}
+.layer-caption {
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  opacity: 0.75;
+}
+.layer-note {
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+  margin: 6px 0 4px;
+}
+.layer-stale {
+  font-size: 9px;
+  line-height: 1.45;
+  color: #b07d2a;
+  background: #e0a4581f;
+  border: 1px solid #e0a45845;
+  border-radius: 5px;
+  padding: 6px 7px;
+  margin: 8px 0 0;
+}
+.layer-method {
+  width: 100%;
+  height: 27px;
+  font-size: 10px;
+  margin-top: 4px;
+}
+.layer-classes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 2px 0 10px;
+}
+.layer-class {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 2px 8px 2px 5px;
+  font-size: 9px;
+  background: transparent;
+  color: var(--text-secondary);
+  opacity: 0.5;
+  cursor: pointer;
+}
+.layer-class.active {
+  opacity: 1;
+  color: var(--text);
+  background: var(--surface-hover, #f2f4ef);
+}
+.layer-export {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 9px;
+  color: var(--text-secondary);
+}
+.layer-export > div {
+  display: flex;
+  gap: 4px;
+}
+.layer-export-link {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.layer-export-link:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+.uncertainty-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 15px 6px;
+}
+.uncertainty-ramp {
+  height: 7px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+}
+.uncertainty-note {
+  font-size: 7px;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+.uncertainty-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 8px;
+  color: var(--text-secondary);
+}
+.field-overlay {
+  image-rendering: pixelated;
+}
+.map-export-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+.map-export-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 9px 11px;
+}
+.map-export-row strong {
+  display: block;
+  font-size: 11px;
+  font-weight: 550;
+}
+.map-export-row span {
+  font-size: 9px;
+  color: var(--text-secondary);
+}
+.map-export-stale {
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  color: #b07d2a;
+  background: #e0a4581f;
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+.map-export-links {
+  display: flex;
+  gap: 4px;
+}
+.map-export-links a {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 7px;
+  font-size: 8px;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+.map-export-links a:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+.map-exports-card {
+  margin-top: 16px;
+}
 .custom-bands {
   left: 13px;
   top: 52px;
@@ -1824,9 +1997,56 @@ kbd {
   border-radius: 5px;
   position: relative;
   background-color: #3f5031;
-  background-size: 310%;
+  /* The image is the patch itself (windowed GeoTIFF read), so it fills the box
+     exactly. No background-size/background-position maths: those can never
+     agree with the map, which is what this replaced. */
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
   overflow: hidden;
   isolation: isolate;
+}
+.sample-patch-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.patch-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.patch-caption > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.patch-context {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.patch-context:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+.patch-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #eae4cf;
 }
 .sample-patch:after {
   content: '';
@@ -1837,14 +2057,26 @@ kbd {
 }
 .patch-crosshair {
   position: absolute;
-  left: 50%;
-  top: 45%;
-  width: 40px;
-  height: 36px;
+  /* Inset border = the patch edge itself, so the crop boundary is visible. */
+  inset: 0;
+  border-radius: 4px;
+  width: auto;
+  height: auto;
+  left: 0;
+  top: 0;
   border: 1px dashed #f5e0a3;
-  transform: translate(-50%, -50%);
   background: #f5df9b09;
   box-shadow: 0 0 0 1px #f5e0a325;
+  pointer-events: none;
+}
+.georef-reason {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #7a5c1f38;
+  color: #f0dfae;
+  font-size: 9px;
+  letter-spacing: 0.04em;
 }
 .patch-crosshair:before,
 .patch-crosshair:after {
@@ -4998,7 +5230,6 @@ kbd {
   }
   .sample-patch {
     height: 130px;
-    background-size: 190%;
   }
   .patch-coordinate {
     font-size: 9px;
@@ -5006,8 +5237,7 @@ kbd {
     left: 10px;
   }
   .patch-crosshair {
-    height: 50px;
-    width: 55px;
+    border-width: 2px;
   }
   .prediction-row {
     padding: 15px 0 13px;

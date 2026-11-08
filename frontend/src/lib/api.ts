@@ -3,6 +3,9 @@ import type {
   Dataset,
   Iteration,
   LabelInput,
+  MapExportFormat,
+  MapField,
+  MapLayer,
   Metrics,
   Project,
   Sample,
@@ -10,6 +13,7 @@ import type {
   SomClassifyInput,
   SomData,
   SomQueryOptions,
+  UncertaintyMethod,
 } from '@/types';
 const BASE = '/api/projects';
 export async function request<T>(path: string, options?: RequestInit): Promise<T> {
@@ -30,6 +34,20 @@ export async function request<T>(path: string, options?: RequestInit): Promise<T
     );
   return data as T;
 }
+/** Query string for a map-layer request. */
+function mapQuery(options: {
+  layer: MapLayer;
+  method?: UncertaintyMethod;
+  datasetId?: string;
+  iteration?: number;
+}): string {
+  const params = new URLSearchParams({ layer: options.layer });
+  if (options.layer === 'uncertainty') params.set('method', options.method ?? 'entropy');
+  if (options.datasetId) params.set('datasetId', options.datasetId);
+  if (options.iteration !== undefined) params.set('iteration', String(options.iteration));
+  return params.toString();
+}
+
 export const api = {
   projects: () => request<Project[]>(''),
   createProject: (data: CreateProjectInput) =>
@@ -84,6 +102,26 @@ export const api = {
       method: 'POST',
       body: '{}',
     }),
+  mapField: (id: string, options: Parameters<typeof mapQuery>[0]) =>
+    request<MapField>(`/${id}/map?${mapQuery(options)}`),
+  /** Download URL for a layer export; the browser handles the file itself. */
+  mapExportUrl: (
+    id: string,
+    options: {
+      layer: MapLayer | 'probability';
+      format: MapExportFormat;
+      method?: UncertaintyMethod;
+      datasetId?: string;
+      scale?: number;
+    },
+  ) => {
+    const params = new URLSearchParams({ format: options.format });
+    if (options.layer === 'uncertainty') params.set('method', options.method ?? 'entropy');
+    if (options.layer === 'probability') params.set('layer', 'probability');
+    if (options.datasetId) params.set('datasetId', options.datasetId);
+    if (options.scale) params.set('scale', String(options.scale));
+    return `${BASE}/${id}/map/export?${params.toString()}`;
+  },
   deleteDataset: (id: string, datasetId: string) =>
     request<{ deleted: boolean }>(`/${id}/dataset/${datasetId}`, { method: 'DELETE' }),
   upload: (id: string, file: File, onProgress: (progress: number) => void) =>

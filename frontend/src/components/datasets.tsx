@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDatasets, useDeleteDataset, useSaveLabels, useUpload } from '@/hooks/use-projects';
+import { forgetDataset } from '@/lib/geotiff';
 import { parseLabels } from '@/lib/import-labels';
 import { useRasterPreview } from '@/lib/use-raster';
 import { cn, downloadJSON, errorMessage, formatBytes, formatNumber } from '@/lib/utils';
@@ -546,6 +547,7 @@ export function DatasetManager({ project }: { project: Project }) {
                 if (!deleting) return;
                 try {
                   await remove.mutateAsync(deleting.id);
+                  forgetDataset(deleting.id);
                   toast.success('Scene removed from your dataset.');
                   setDeleting(null);
                 } catch {

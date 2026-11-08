@@ -110,4 +110,5 @@ class TestInference:
         resp = client.get(f"/projects/{project['id']}/exports")
         assert resp.status_code == 200
         types = {e["type"] for e in resp.json()}
-        assert types == {"hard", "probability"}
+        # inference now also writes an uncertainty export for the map layers
+        assert types == {"hard", "probability", "uncertainty"}

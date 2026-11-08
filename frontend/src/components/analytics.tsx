@@ -18,14 +18,39 @@ import {
   History,
   TrendingUp,
 } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { useMetrics } from '@/hooks/use-projects';
+import { api } from '@/lib/api';
 import { useWorkspace } from '@/stores/workspace';
 import { downloadCSV, downloadJSON, formatNumber } from '@/lib/utils';
 import { Button } from './ui/button';
 import { Badge, Dot, EmptyState, ErrorState, Skeleton } from './ui/common';
 import { MetricCards } from './metric-cards';
 import { SomExplorer } from './som-explorer';
-import type { Iteration, Metrics, Project } from '@/types';
+import type {
+  Iteration,
+  MapExportFormat,
+  MapLayer,
+  Metrics,
+  Project,
+} from '@/types';
+
+/** An export row as the adapter reports it. */
+interface ExportRow {
+  id: number;
+  type: string;
+  dataset_name?: string | null;
+  iteration?: number | null;
+  method?: string | null;
+  stale?: boolean;
+  created_at?: string;
+}
+
+const LAYER_NAMES: Record<string, string> = {
+  hard: 'Classification',
+  uncertainty: 'Uncertainty',
+  probability: 'Probabilities',
+};
 const tooltipStyle = {
   background: 'var(--surface)',
   border: '1px solid var(--border)',
@@ -360,6 +385,95 @@ function HistoryRows({
     </>
   );
 }
+/**
+ * The maps that exist for this project, with the iteration that produced them
+ * and whether a newer run has superseded them. Each row downloads the same
+ * artifact the map view renders.
+ */
+function MapExports({ project }: { project: Project }) {
+  const exports = useQuery({
+    queryKey: ['project', project.id, 'exports'],
+    queryFn: async () => {
+      const response = await fetch(`/api/projects/${project.id}/exports`);
+      if (!response.ok) throw new Error('The export list could not be loaded.');
+      return (await response.json()) as ExportRow[];
+    },
+  });
+
+  if (exports.isLoading)
+    return (
+      <article className="chart-card map-exports-card">
+        <Skeleton className="chart-skeleton" />
+      </article>
+    );
+
+  const rows = exports.data ?? [];
+  return (
+    <article className="chart-card map-exports-card">
+      <div className="chart-card-heading">
+        <div>
+          <h3>Maps</h3>
+          <p>Classification and uncertainty rasters produced by your models.</p>
+        </div>
+      </div>
+      {!rows.length ? (
+        <EmptyState
+          title="No maps yet"
+          description="Train a model, then enable a layer in the map view — every layer is exportable as GeoTIFF, PNG or CSV."
+        />
+      ) : (
+        <div className="map-export-list">
+          {rows.map((row) => {
+            const layer = (row.type === 'hard' ? 'hard' : row.type) as MapLayer | 'probability';
+            const downloadable = layer === 'hard' || layer === 'uncertainty';
+            return (
+              <div className="map-export-row" key={row.id}>
+                <div>
+                  <strong>{LAYER_NAMES[layer] ?? row.type}</strong>
+                  <span>
+                    {row.dataset_name ?? `dataset ${row.id}`} · iteration {row.iteration ?? '—'}
+                    {row.method ? ` · ${row.method.replace('_', ' ')}` : ''}
+                  </span>
+                </div>
+                {row.stale && <span className="map-export-stale">retrain available</span>}
+                {downloadable ? (
+                  <div className="map-export-links">
+                    {(['tif', 'png', 'csv'] as MapExportFormat[]).map((format) => (
+                      <a
+                        key={format}
+                        href={api.mapExportUrl(project.id, {
+                          layer: layer as MapLayer,
+                          format,
+                          method: (row.method as 'entropy') ?? 'entropy',
+                        })}
+                      >
+                        {format.toUpperCase()}
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="map-export-links">
+                    <a
+                      href={api.mapExportUrl(project.id, {
+                        layer: 'probability',
+                        format: 'tif',
+                        datasetId: undefined,
+                      })}
+                      title="One GeoTIFF band per class"
+                    >
+                      TIF
+                    </a>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </article>
+  );
+}
+
 export function Analytics({ project }: { project: Project }) {
   const { data, isLoading, error, refetch } = useMetrics(project.id);
   return (
@@ -529,6 +643,7 @@ export function Analytics({ project }: { project: Project }) {
             </div>
             <SomExplorer project={project} />
             <IterationHistory metrics={data} />
+            <MapExports project={project} />
           </>
         )
       )}

@@ -1,5 +1,6 @@
 'use client';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ArrowRight,
   Check,
@@ -20,12 +21,12 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { useDeleteLabel } from '@/hooks/use-projects';
-import { useRasterPreview } from '@/lib/use-raster';
+import { renderPatch } from '@/lib/geotiff';
 import { useWorkspace } from '@/stores/workspace';
 import { cn } from '@/lib/utils';
 import { Button } from './ui/button';
 import { Badge, Dot, EmptyState, Kbd } from './ui/common';
-import type { Dataset, Project, Sample } from '@/types';
+import type { BandMode, Dataset, Project, Sample } from '@/types';
 interface Props {
   project: Project;
   samples: Sample[];
@@ -34,41 +35,92 @@ interface Props {
   stage: 'idle' | 'saving' | 'training' | 'complete';
   onQuery: () => void;
 }
+/**
+ * The patch the model actually classified, read from that patch's pixel window
+ * of the sample's own dataset. No scaled whole-image background, no CSS
+ * positioning: what you see is the crop.
+ */
 function SamplePatch({
   sample,
   dataset,
+  bandMode,
   onClick,
 }: {
   sample: Sample;
   dataset: Dataset | undefined;
+  bandMode: BandMode;
   onClick?: () => void;
 }) {
-  const preview = useRasterPreview(dataset);
-  const b = dataset?.bounds;
-  const x = b ? Math.max(0, Math.min(100, ((sample.lng - b[0]) / (b[2] - b[0])) * 100)) : 50;
-  const y = b ? Math.max(0, Math.min(100, (1 - (sample.lat - b[1]) / (b[3] - b[1])) * 100)) : 50;
+  const [context, setContext] = useState(false);
+  const window = useMemo(() => {
+    if (!dataset || !sample.window) return null;
+    if (!context) return sample.window;
+    const pad = dataset.patchGrid?.patchSize ?? 32;
+    return {
+      x0: Math.max(0, sample.window.x0 - pad),
+      y0: Math.max(0, sample.window.y0 - pad),
+      x1: Math.min(dataset.width, sample.window.x1 + pad),
+      y1: Math.min(dataset.height, sample.window.y1 + pad),
+    };
+  }, [dataset, sample.window, context]);
+
+  const preview = useQuery({
+    queryKey: ['patch', dataset?.id, window, bandMode],
+    queryFn: () =>
+      renderPatch(dataset!.url, dataset!.id, window!, bandMode, undefined, context ? 132 : 96),
+    enabled: !!dataset && !!window,
+    staleTime: Infinity,
+    retry: 0,
+  });
+
+  const centre = sample.pixel
+    ? { x: sample.pixel.x + (sample.window ? (sample.window.x1 - sample.window.x0) / 2 : 0),
+        y: sample.pixel.y + (sample.window ? (sample.window.y1 - sample.window.y0) / 2 : 0) }
+    : null;
+
   return (
-    <button
-      className="sample-patch"
-      style={{
-        backgroundImage: preview.data ? `url("${preview.data}")` : undefined,
-        backgroundPosition: `${x}% ${y}%`,
-        backgroundSize: '600%',
-      }}
-      onClick={onClick}
-      aria-label="Locate this sample on the map"
-    >
-      <span className="patch-crosshair" />
-      <span className="patch-corner">
-        <ScanLine size={14} />
-      </span>
-      <span className="patch-coordinate">
-        <MapPin size={10} />
-        {dataset?.pixelSpace && sample.pixel
-          ? `x ${Math.round(sample.pixel.x)}, y ${Math.round(sample.pixel.y)} px`
-          : `${Math.abs(sample.lat).toFixed(4)}° ${sample.lat >= 0 ? 'N' : 'S'}, ${Math.abs(sample.lng).toFixed(4)}° ${sample.lng >= 0 ? 'E' : 'W'}`}
-      </span>
-    </button>
+    <div className="sample-patch-wrap">
+      <button
+        className="sample-patch"
+        style={{
+          backgroundImage: preview.data ? `url("${preview.data}")` : undefined,
+          imageRendering: 'pixelated',
+        }}
+        onClick={onClick}
+        aria-label="Locate this sample on the map"
+      >
+        {!preview.data && (
+          <span className="patch-loading">
+            <LoaderCircle size={14} className="spin" />
+          </span>
+        )}
+        {!context && <span className="patch-crosshair" />}
+        <span className="patch-corner">
+          <ScanLine size={14} />
+        </span>
+        <span className="patch-coordinate">
+          <MapPin size={10} />
+          {sample.window
+            ? `x ${Math.round(sample.window.x0)}–${Math.round(sample.window.x1)} · y ${Math.round(sample.window.y0)}–${Math.round(sample.window.y1)} px`
+            : centre
+              ? `x ${Math.round(centre.x)}, y ${Math.round(centre.y)} px`
+              : 'no patch footprint'}
+        </span>
+      </button>
+      <div className="patch-caption">
+        <span title="The sample's dataset — thumbnails always read from it, never from the dataset the map happens to show.">
+          {dataset?.name ?? 'No dataset'}
+        </span>
+        <button
+          className="patch-context"
+          onClick={() => setContext((value) => !value)}
+          aria-pressed={context}
+          title={context ? 'Show the patch only' : 'Show the patch with one patch of context'}
+        >
+          {context ? 'Patch only' : 'With context'}
+        </button>
+      </div>
+    </div>
   );
 }
 export function SampleReview({ project, samples, datasets, onSubmit, stage, onQuery }: Props) {
@@ -80,6 +132,7 @@ export function SampleReview({ project, samples, datasets, onSubmit, stage, onQu
     setActiveClass,
     setTool,
     selectedDatasetId,
+    bandMode,
   } = useWorkspace();
   const current = samples.filter(
     (s) => s.source === 'query' && (s.iteration === project.iteration || s.status === 'pending'),
@@ -386,7 +439,8 @@ export function SampleReview({ project, samples, datasets, onSubmit, stage, onQu
           </div>
           <SamplePatch
             sample={active}
-            dataset={dataset}
+            dataset={datasets.find((d) => d.id === active.datasetId) ?? dataset}
+            bandMode={bandMode}
             onClick={() => {
               selectSample(active.id);
               toast.info('Sample selected on the map. Use the crosshair control to zoom to it.');

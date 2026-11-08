@@ -8,15 +8,23 @@ import { useReviewQueue } from '@/stores/review-queue';
 import type {
   CreateProjectInput,
   LabelInput,
+  MapLayer,
   Sample,
   SomClassifyInput,
   SomQueryOptions,
+  UncertaintyMethod,
 } from '@/types';
 export const keys = {
   projects: ['projects'] as const,
   dataset: (id: string) => ['project', id, 'dataset'] as const,
   labels: (id: string) => ['project', id, 'labels'] as const,
   metrics: (id: string) => ['project', id, 'metrics'] as const,
+  mapField: (
+    id: string,
+    layer: MapLayer,
+    method: UncertaintyMethod,
+    datasetId: string | undefined,
+  ) => ['project', id, 'map', layer, method, datasetId ?? 'all'] as const,
   som: (id: string, datasetId?: string, size?: number) =>
     ['project', id, 'som', datasetId ?? 'latest', size ?? 'auto'] as const,
   somClassify: (id: string, input: SomClassifyInput) =>
@@ -32,6 +40,28 @@ export const keys = {
       input.resolution ?? 'pixel',
     ] as const,
 };
+
+/**
+ * A model-derived map layer. Keyed by dataset + layer + method so switching the
+ * uncertainty method or the active dataset reuses or refetches exactly one field.
+ */
+export function useMapField(
+  id: string,
+  options: {
+    layer: MapLayer;
+    method: UncertaintyMethod;
+    datasetId: string | undefined;
+    enabled: boolean;
+  },
+) {
+  return useQuery({
+    queryKey: keys.mapField(id, options.layer, options.method, options.datasetId),
+    queryFn: () => api.mapField(id, options),
+    enabled: !!id && options.enabled,
+    staleTime: 60_000,
+    retry: 0,
+  });
+}
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: api.projects });
 }
