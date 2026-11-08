@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .api import datasets, inference, labels, projects, query, training
+from .api import datasets, inference, labels, projects, query, som, training
 from .config import Settings, settings as default_settings
 from .db import Database
 from .storage import ensure_dirs
@@ -32,8 +32,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         description=(
             "Active Learning satellite image classification backend: projects, "
             "GeoTIFF ingestion, label management with history, AL batch queries "
-            "(uncertainty / diversity / hybrid), classical model training "
-            "(RF / LightGBM) with metrics, inference and GeoTIFF export."
+            "(uncertainty / diversity / hybrid / som), Self-Organizing Map "
+            "exploration, classical model training (RF / LightGBM) with metrics, "
+            "inference and GeoTIFF export."
         ),
         version=__version__,
         lifespan=lifespan,
@@ -51,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(datasets.router)
     app.include_router(labels.router)
     app.include_router(query.router)
+    app.include_router(som.router)
     app.include_router(training.router)
     app.include_router(inference.router)
 

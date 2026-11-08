@@ -122,3 +122,47 @@ export interface RasterMetadata {
   crs: string;
   bounds: Bounds | null;
 }
+export type SomColorMode = 'u-matrix' | 'classes' | 'spectral' | 'density' | 'uncertainty';
+export interface SomCell {
+  row: number;
+  col: number;
+  hitCount: number;
+  labeledCount: number;
+  unlabeledCount: number;
+  uValue: number;
+  quantizationError: number;
+  dominantLabel: string | null;
+  labelCounts: Record<string, number>;
+  predictedClass: string | null;
+  predictionCounts: Record<string, number>;
+  meanConfidence: number | null;
+  meanUncertainty: number | null;
+  bandMeans: number[];
+  bandProfile: number[];
+  representativeSampleId: string | null;
+  sampleIds: string[];
+}
+export interface SomData {
+  projectId: string;
+  datasetId: string;
+  rows: number;
+  cols: number;
+  epochs: number;
+  totalPatches: number;
+  labeledPatches: number;
+  activeNeurons: number;
+  quantizationError: number;
+  topographicError: number;
+  modelIteration: number | null;
+  bands: number;
+  classes: string[];
+  uMatrix: number[][];
+  hitGrid: number[][];
+  cells: SomCell[];
+}
+export interface SomQueryOptions {
+  somRows?: number;
+  somCols?: number;
+  somEpochs?: number;
+  somCell?: [number, number];
+}

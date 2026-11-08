@@ -129,6 +129,20 @@ def main() -> None:
         r = client.post(f"/api/projects/{pid}/query", json={"batchSize": 8, "strategy": "entropy"})
         check("uncertainty before model -> actionable 409", r.status_code == 409 and "diversity" in r.json()["error"], r.json().get("error", "")[:80])
 
+        r = client.get(f"/api/projects/{pid}/som?rows=3&cols=3")
+        check("cold-start SOM explorer", r.status_code == 200, str(r.status_code))
+        som_data = r.json()
+        check(
+            "SOM grid + cells",
+            som_data["rows"] == 3
+            and som_data["cols"] == 3
+            and len(som_data["cells"]) == 9
+            and sum(c["hitCount"] for c in som_data["cells"]) == som_data["totalPatches"],
+        )
+
+        r = client.post(f"/api/projects/{pid}/query", json={"batchSize": 4, "strategy": "som"})
+        check("SOM cold-start query", r.status_code == 200 and len(r.json()["samples"]) == 4)
+
         r = client.post(f"/api/projects/{pid}/query", json={"batchSize": 8, "strategy": "diversity"})
         check("diversity cold-start query", r.status_code == 200, str(r.status_code))
         samples = r.json()["samples"]
@@ -181,11 +195,37 @@ def main() -> None:
         check("project stats fan-out", p1["iteration"] == it["number"] and p1["labeledCount"] == 6 and p1["status"] == "in_progress" and p1["modelVersion"])
 
         # ------------------------------------- model-based query strategies
-        for strategy in ("entropy", "margin", "least-confidence", "hybrid"):
+        for strategy in ("entropy", "margin", "least-confidence", "hybrid", "som"):
             r = client.post(f"/api/projects/{pid}/query", json={"batchSize": 4, "strategy": strategy})
             check(f"{strategy} query with model", r.status_code == 200 and len(r.json()["samples"]) > 0)
             if strategy == "entropy":
                 check("model prediction surfaced", r.json()["samples"][0]["prediction"] in ("Water", "Vegetation", "Bare soil"))
+
+        r = client.get(f"/api/projects/{pid}/som?rows=3&cols=3")
+        som_after = r.json()
+        check(
+            "SOM after training includes uncertainty",
+            r.status_code == 200
+            and som_after["modelIteration"] is not None
+            and any(c["meanUncertainty"] is not None for c in som_after["cells"]),
+        )
+        unlabeled_cell = next(c for c in som_after["cells"] if c["unlabeledCount"] > 0)
+        r = client.post(
+            f"/api/projects/{pid}/query",
+            json={
+                "batchSize": 3,
+                "strategy": "som",
+                "somRows": 3,
+                "somCols": 3,
+                "somCell": [unlabeled_cell["row"], unlabeled_cell["col"]],
+            },
+        )
+        check(
+            "SOM neuron-targeted query",
+            r.status_code == 200
+            and 1 <= len(r.json()["samples"]) <= 3
+            and {s["id"] for s in r.json()["samples"]} <= set(unlabeled_cell["sampleIds"]),
+        )
 
         # ------------------------------------------------ label correction
         corr = dict(labels[0])

@@ -339,9 +339,14 @@ export function QueryBatchDialog({
         if (result.samples[0].datasetId) selectDataset(result.samples[0].datasetId);
       }
       toast.success(`${result.samples.length} samples added to the review queue.`, {
-        description: hasModel
-          ? 'Ranked by your trained model on the RSAL backend.'
-          : 'Cold-start core-set selection — no model needed yet.',
+        description:
+          strategy === 'som'
+            ? hasModel
+              ? 'Balanced model uncertainty across Kohonen topological clusters.'
+              : 'Cold-start Kohonen SOM topological sampling — no model needed yet.'
+            : hasModel
+              ? 'Ranked by your trained model on the RSAL backend.'
+              : 'Cold-start core-set selection — no model needed yet.',
       });
       onOpenChange(false);
     } catch {
@@ -382,6 +387,15 @@ export function QueryBatchDialog({
               title: 'Diversity (core-set)',
               text: 'Cover the scene’s spectral variety. Works before the first model.',
               tag: hasModel ? undefined : 'Recommended',
+              needsModel: false,
+            },
+            {
+              id: 'som',
+              title: 'Self-organizing map (SOM)',
+              text: hasModel
+                ? 'Balance model uncertainty across topological spectral clusters.'
+                : 'Organize patches onto a 2D Kohonen grid to sample distinct clusters.',
+              tag: 'Topological',
               needsModel: false,
             },
             {
