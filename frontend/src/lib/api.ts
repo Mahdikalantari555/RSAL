@@ -9,6 +9,8 @@ import type {
   Metrics,
   Project,
   Sample,
+  SomClassification,
+  SomClassifyInput,
   SomData,
   SomQueryOptions,
   UncertaintyMethod,
@@ -65,6 +67,11 @@ export const api = {
     const suffix = qs.toString() ? `?${qs.toString()}` : '';
     return request<SomData>(`/${id}/som${suffix}`);
   },
+  somClassify: (id: string, input: SomClassifyInput) =>
+    request<SomClassification>(`/${id}/som-classify`, {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
   query: (
     id: string,
     batchSize: number,

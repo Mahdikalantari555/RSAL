@@ -61,6 +61,7 @@ EXPORT_TYPES = {
     "probability": "probability",
     "prob": "probability",
     "uncertainty": "uncertainty",
+    "som": "som",
 }
 DEFAULT_UNCERTAINTY_METHOD = "entropy"
 
@@ -332,7 +333,10 @@ async def download(
     if export_type not in EXPORT_TYPES:
         raise HTTPException(
             status_code=404,
-            detail=f"Unknown export type '{export_type}'; use hard, probability or uncertainty",
+            detail=(
+                f"Unknown export type '{export_type}'; use hard, probability, "
+                "uncertainty or som"
+            ),
         )
     etype = EXPORT_TYPES[export_type]
     if etype == "uncertainty":
@@ -342,10 +346,21 @@ async def download(
 
     if export is None:
         dataset = await require_dataset(session, project_id, dataset_id)
-        await _run_inference(session, settings, project, dataset, None, None, method)
-        export = await _latest_export(session, project_id, etype, dataset.id, method)
-        if export is None:
-            raise HTTPException(status_code=500, detail="Export failed")
+        if etype == "som":
+            from ..schemas import SomClassifyRequest
+            from .som import run_som_classification
+
+            export, _, _ = await run_som_classification(
+                session, settings, project, dataset, SomClassifyRequest(dataset_id=dataset.id)
+            )
+        else:
+            # `_latest_export` already filters by method, which matters for
+            # uncertainty: each method is a separate artifact, so a plain
+            # "newest row of this type" lookup could hand back another method.
+            await _run_inference(session, settings, project, dataset, None, None, method)
+            export = await _latest_export(session, project_id, etype, dataset.id, method)
+            if export is None:
+                raise HTTPException(status_code=500, detail="Export failed")
 
     suffix = f"_{method}" if etype == "uncertainty" else ""
     return FileResponse(

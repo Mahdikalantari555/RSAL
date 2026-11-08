@@ -125,6 +125,31 @@ def main() -> None:
             f"{len(r.content)} bytes",
         )
 
+        # ---------------------------------- unsupervised SOM (zero labels)
+        r = client.post(
+            f"/api/projects/{pid}/som-classify",
+            json={"rows": 4, "cols": 4, "nClusters": 4, "epochs": 30, "resolution": "pixel"},
+        )
+        check("unsupervised SOM classify (zero labels)", r.status_code == 200, str(r.status_code))
+        unsup = r.json()
+        check(
+            "unsupervised SOM clusters + full pixel shape",
+            unsup["nClusters"] == 4
+            and unsup["shape"] == [96, 96]
+            and sum(c["pixelCount"] for c in unsup["clusters"]) == 96 * 96,
+        )
+        r_tif = client.get(unsup["downloadUrl"])
+        check(
+            "unsupervised SOM GeoTIFF download",
+            r_tif.status_code == 200 and r_tif.headers["content-type"].startswith("image/tiff"),
+            f"{len(r_tif.content)} bytes",
+        )
+        with rasterio.open(io.BytesIO(r_tif.content)) as som_ds:
+            check(
+                "unsupervised SOM GeoTIFF valid + 4 quadrants separated",
+                som_ds.width == 96 and som_ds.height == 96 and len(np.unique(som_ds.read(1))) == 4,
+            )
+
         # ------------------------------------------------ cold-start query
         r = client.post(f"/api/projects/{pid}/query", json={"batchSize": 8, "strategy": "entropy"})
         check("uncertainty before model -> actionable 409", r.status_code == 409 and "diversity" in r.json()["error"], r.json().get("error", "")[:80])

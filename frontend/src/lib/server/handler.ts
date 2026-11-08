@@ -12,6 +12,7 @@ import type {
   Metrics,
   Project,
   Sample,
+  SomClassification,
   SomData,
 } from '@/types';
 import { classesFromNames, CLASS_COLORS } from '@/lib/palette';
@@ -26,6 +27,7 @@ import {
   type RsalMetrics,
   type RsalProject,
   type RsalQueryResponse,
+  type RsalSomClassifyResponse,
   type RsalSomResponse,
   type RsalTrainResponse,
 } from './rsal';
@@ -528,6 +530,83 @@ export async function actionHandler(
       const suffix = qs.toString() ? `?${qs.toString()}` : '';
       const result = await rsalGet<RsalSomResponse>(`${base}/som${suffix}`);
       return json(toSomData(result));
+    }
+
+    if (action === 'som-classify' && method === 'POST') {
+      const body = await request.json().catch(() => ({}));
+      const rows = Math.min(Math.max(Number(body.rows) || 4, 2), 32);
+      const cols = Math.min(Math.max(Number(body.cols) || 4, 2), 32);
+      const nClusters =
+        body.nClusters != null && Number(body.nClusters) >= 2
+          ? Number(body.nClusters)
+          : null;
+      const result = await rsalPost<RsalSomClassifyResponse>(`${base}/som/classify`, {
+        rows,
+        cols,
+        ...(nClusters ? { n_clusters: nClusters } : {}),
+        epochs: Math.min(Math.max(Number(body.epochs) || 50, 5), 500),
+        resolution: body.resolution === 'patch' ? 'patch' : 'pixel',
+        include_map: false,
+        ...(body.datasetId && /^\d+$/.test(String(body.datasetId))
+          ? { dataset_id: Number(body.datasetId) }
+          : {}),
+      });
+      const mapped: SomClassification = {
+        projectId: String(result.project_id),
+        datasetId: String(result.dataset_id),
+        exportId: result.export_id,
+        rows: result.rows,
+        cols: result.cols,
+        epochs: result.epochs,
+        nClusters: result.n_clusters,
+        resolution: result.resolution,
+        shape: result.shape,
+        totalValid: result.total_valid,
+        nodataCount: result.nodata_count,
+        quantizationError: result.quantization_error,
+        topographicError: result.topographic_error,
+        uMatrix: result.u_matrix,
+        neuronClusters: result.neuron_clusters,
+        neuronHits: result.neuron_hits,
+        clusters: result.clusters.map((c) => ({
+          clusterId: c.cluster_id,
+          label: c.label,
+          color: c.color,
+          pixelCount: c.pixel_count,
+          fraction: c.fraction,
+          bandMeans: c.band_means,
+          bandProfile: c.band_profile,
+          neurons: c.neurons,
+        })),
+        downloadUrl: `/api/projects/${result.project_id}/som-download?exportId=${result.export_id}&datasetId=${result.dataset_id}`,
+      };
+      return json(mapped);
+    }
+
+    if (action === 'som-download' && method === 'GET') {
+      const url = new URL(request.url);
+      const qs = new URLSearchParams();
+      const did = url.searchParams.get('datasetId');
+      const eid = url.searchParams.get('exportId');
+      if (did && /^\d+$/.test(did)) qs.set('dataset_id', did);
+      if (eid && /^\d+$/.test(eid)) qs.set('export_id', eid);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      const response = await rsalFetch(`${base}/som/download${suffix}`);
+      if (!response.ok) {
+        const data = await response.json().catch(() => null);
+        throw new ApiError(
+          data?.detail ?? 'The SOM classification GeoTIFF could not be exported.',
+          response.status,
+        );
+      }
+      return new NextResponse(response.body, {
+        headers: {
+          'content-type': response.headers.get('content-type') ?? 'image/tiff',
+          'content-disposition': `attachment; filename="project_${id}_unsupervised_som.tif"`,
+          'cache-control': 'private, max-age=3600',
+          'x-content-type-options': 'nosniff',
+        },
+      });
     }
 
     if (action === 'query' && method === 'POST') {

@@ -8,6 +8,7 @@ import { LearningWorkspace } from './learning-workspace';
 import { ProjectDashboard } from './project-dashboard';
 import { DatasetManager } from './datasets';
 import { Analytics } from './analytics';
+import { UnsupervisedSom } from './unsupervised-som';
 import { CreateProjectDialog, HelpDialog, PreferencesDialog } from './workspace-dialogs';
 import { ErrorState, Skeleton } from './ui/common';
 import { Button } from './ui/button';
@@ -38,7 +39,7 @@ export function WorkspaceApp() {
   }, [projects, projectId, setProject]);
   useEffect(() => {
     window.scrollTo({ top: 0, behavior: 'auto' });
-    document.title = `${{ learning: 'Active learning', projects: 'Your projects', datasets: 'Dataset library', analytics: 'Model analytics' }[view]} · TerraLab`;
+    document.title = `${{ learning: 'Active learning', unsupervised: 'Unsupervised SOM', projects: 'Your projects', datasets: 'Dataset library', analytics: 'Model analytics' }[view]} · TerraLab`;
   }, [view, projectId]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -90,6 +91,8 @@ export function WorkspaceApp() {
             <div className="view-transition" key={`${project.id}-${view}`}>
               {view === 'learning' ? (
                 <LearningWorkspace project={project} onShortcuts={() => setDialog('shortcuts')} />
+              ) : view === 'unsupervised' ? (
+                <UnsupervisedSom project={project} />
               ) : view === 'datasets' ? (
                 <DatasetManager project={project} />
               ) : (

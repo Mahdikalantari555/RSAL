@@ -184,6 +184,49 @@ def grid_metadata(
     }
 
 
+def pixel_transform(
+    base_transform: list[float] | None,
+    region_x0: int,
+    region_y0: int,
+) -> Affine:
+    """Exact pixel-level affine transform for a cropped raster region."""
+    return transform_of(base_transform) @ Affine.translation(region_x0, region_y0)
+
+
+def export_som_geotiff(
+    path: str | Path,
+    cluster_map: np.ndarray,
+    cluster_labels: list[str],
+    colors: list[tuple[int, int, int]],
+    crs: str | None,
+    transform: Affine,
+) -> None:
+    """Write an unsupervised SOM classification GeoTIFF with embedded colormap."""
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=cluster_map.shape[0],
+        width=cluster_map.shape[1],
+        count=1,
+        dtype="uint16",
+        crs=crs,
+        transform=transform,
+        nodata=65535,
+        compress="deflate",
+    ) as dst:
+        dst.write(cluster_map.astype(np.uint16), 1)
+        dst.update_tags(
+            classes=json.dumps(cluster_labels),
+            description="RSAL unsupervised SOM classification map (pixel value = 0-based cluster index)",
+        )
+        dst.write_colormap(
+            1,
+            {i: (int(c[0]), int(c[1]), int(c[2]), 255) for i, c in enumerate(colors)},
+        )
+
+
 def export_hard_geotiff(
     path: str | Path,
     hard: np.ndarray,

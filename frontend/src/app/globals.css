@@ -6582,3 +6582,295 @@ kbd {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* --- Unsupervised SOM Classification Workspace --- */
+.unsup-kpi-row {
+  margin-bottom: 18px;
+}
+.unsup-workspace-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.38fr) minmax(300px, 0.92fr);
+  gap: 18px;
+  align-items: start;
+}
+.unsup-map-card {
+  display: flex;
+  flex-direction: column;
+}
+.unsup-map-card .map-canvas-wrap {
+  min-height: 500px;
+}
+.som-leaflet-map .leaflet-image-layer {
+  image-rendering: pixelated;
+}
+.unsup-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.unsup-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  font-size: 9.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.unsup-toggle-btn.active {
+  background: var(--primary-soft);
+  border-color: var(--primary);
+  color: var(--primary);
+}
+.unsup-map-top-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.unsup-palette-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 7px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--border);
+  backdrop-filter: blur(8px);
+}
+.dark .unsup-palette-pills {
+  background: rgba(24, 33, 28, 0.9);
+}
+.unsup-palette-pills button {
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 9px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.unsup-palette-pills button.active {
+  background: var(--primary);
+  color: #fff;
+}
+.unsup-map-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 11px 15px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.unsup-opacity-slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 9.5px;
+  color: var(--text-secondary);
+}
+.unsup-opacity-slider input[type='range'] {
+  width: 96px;
+}
+.unsup-opacity-slider strong {
+  min-width: 28px;
+  font-size: 9.5px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.unsup-quick-legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.unsup-reset-solo {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary);
+  font-size: 8.5px;
+  font-weight: 600;
+}
+.unsup-legend-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  font-size: 8.5px;
+  color: var(--text);
+}
+.unsup-legend-pill > i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.unsup-legend-pill > small {
+  color: var(--muted);
+  font-size: 8px;
+}
+.unsup-legend-pill.is-solo {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.unsup-legend-pill.is-hidden {
+  opacity: 0.4;
+}
+.unsup-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.unsup-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0 12px;
+}
+.unsup-run-btn {
+  margin-top: 2px;
+}
+.unsup-cluster-list {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 13px;
+  max-height: 315px;
+  overflow-y: auto;
+  padding-right: 3px;
+}
+.unsup-cluster-row {
+  padding: 9px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.unsup-cluster-row.is-solo {
+  border-color: var(--primary);
+  background: var(--primary-soft);
+}
+.unsup-cluster-row.is-hidden {
+  opacity: 0.48;
+}
+.unsup-cluster-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.unsup-color-input {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.unsup-name-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+}
+.unsup-name-input:hover,
+.unsup-name-input:focus {
+  border-color: var(--border);
+  background: var(--surface);
+}
+.unsup-cluster-share {
+  font-size: 9.5px;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.unsup-area-bar {
+  height: 4px;
+  border-radius: 999px;
+  background: var(--border);
+  overflow: hidden;
+}
+.unsup-area-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+.unsup-cluster-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 8.5px;
+  color: var(--muted);
+}
+.unsup-mini-spectrum {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 3px;
+  height: 13px;
+}
+.unsup-mini-spectrum > span {
+  width: 5px;
+  height: 100%;
+  background: var(--border);
+  border-radius: 2px;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+.unsup-mini-spectrum > span > i {
+  display: block;
+  width: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+}
+.unsup-neuron-grid {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+  padding: 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+.unsup-neuron-cell {
+  aspect-ratio: 1;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 8px;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 0;
+}
+.unsup-neuron-cell.is-solo {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 3.5px var(--primary);
+}
+@media (max-width: 1024px) {
+  .unsup-workspace-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .unsup-map-card .map-canvas-wrap {
+    min-height: 380px;
+  }
+}

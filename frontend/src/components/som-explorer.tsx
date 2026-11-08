@@ -387,27 +387,24 @@ export function SomExplorer({
             <option value="8">8×8 neurons</option>
             <option value="10">10×10 neurons</option>
           </select>
-          {compact ? (
-            <button className="text-button green-text" onClick={() => setView('analytics')}>
-              Full view
-              <ArrowUpRight size={13} />
-            </button>
-          ) : (
-            som && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() =>
-                  downloadJSON(
-                    { project: project.name, exportedAt: new Date().toISOString(), ...som },
-                    `${project.id}-som.json`,
-                  )
-                }
-              >
-                <Download size={13} />
-                Export SOM
-              </Button>
-            )
+          <button className="text-button green-text" onClick={() => setView('unsupervised')}>
+            Unsupervised map
+            <ArrowUpRight size={13} />
+          </button>
+          {!compact && som && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                downloadJSON(
+                  { project: project.name, exportedAt: new Date().toISOString(), ...som },
+                  `${project.id}-som.json`,
+                )
+              }
+            >
+              <Download size={13} />
+              Export SOM
+            </Button>
           )}
         </div>
       </div>

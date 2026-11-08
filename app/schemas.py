@@ -265,7 +265,7 @@ class ExportOut(BaseModel):
     id: int
     project_id: int
     dataset_id: int
-    training_run_id: int
+    training_run_id: int | None
     type: str
     region: dict | None
     created_at: datetime
@@ -326,3 +326,53 @@ class SomResponse(BaseModel):
     u_matrix: list[list[float]]
     hit_grid: list[list[int]]
     cells: list[SomCell]
+
+
+class SomClassifyRequest(BaseModel):
+    dataset_id: int | None = None
+    rows: int = Field(default=4, ge=2, le=32)
+    cols: int = Field(default=4, ge=2, le=32)
+    n_clusters: int | None = Field(default=None, ge=2, le=256)
+    epochs: int = Field(default=50, ge=5, le=500)
+    sigma: float | None = Field(default=None, gt=0.0, le=32.0)
+    learning_rate: float = Field(default=0.7, gt=0.0, le=1.0)
+    resolution: Literal["pixel", "patch"] = "pixel"
+    region: Region | None = None
+    patch_size: int | None = Field(default=None, ge=2, le=512)
+    stride: int | None = Field(default=None, ge=1, le=512)
+    max_train_samples: int = Field(default=25000, ge=64, le=250000)
+    include_map: bool = True
+
+
+class SomClusterSummary(BaseModel):
+    cluster_id: int
+    label: str
+    color: list[int]
+    pixel_count: int
+    fraction: float
+    band_means: list[float]
+    band_profile: list[float]
+    neurons: list[list[int]]
+
+
+class SomClassifyResponse(BaseModel):
+    project_id: int
+    dataset_id: int
+    export_id: int
+    rows: int
+    cols: int
+    epochs: int
+    n_clusters: int
+    resolution: str
+    region: Region
+    shape: list[int]
+    total_valid: int
+    nodata_count: int
+    quantization_error: float
+    topographic_error: float
+    u_matrix: list[list[float]]
+    neuron_clusters: list[list[int]]
+    neuron_hits: list[list[int]]
+    clusters: list[SomClusterSummary]
+    cluster_map: list[list[int]] | None = None
+    exports: dict[str, str]
