@@ -248,3 +248,223 @@ def normalized_band_profiles(
     safe_span = np.where(span < 1e-9, 1.0, span)
     profiles = np.where(span < 1e-9, 0.5, (band_means - lo) / safe_span)
     return band_means, np.clip(profiles, 0.0, 1.0)
+
+
+NODATA_CLUSTER = 65535
+
+_EO_PALETTE: list[tuple[int, int, int]] = [
+    (43, 114, 168),   # deep water blue
+    (52, 142, 98),    # dense forest green
+    (132, 184, 92),   # cropland / light veg
+    (216, 174, 84),   # dryland / golden soil
+    (198, 98, 76),    # urban / built-up terracotta
+    (74, 168, 164),   # wetland / shallow coastal
+    (146, 118, 178),  # rock / upland violet
+    (224, 134, 72),   # bare sand / amber
+    (88, 112, 132),   # shadow / slate
+    (168, 198, 134),  # pasture / sage
+    (184, 126, 152),  # shrubland / mauve
+    (96, 156, 206),   # turbid water / sky
+    (142, 122, 86),   # fallow / earth brown
+    (68, 176, 132),   # riparian / seafoam
+    (212, 196, 128),  # dune / pale sand
+    (124, 92, 138),   # alpine / plum
+]
+
+
+def som_cluster_palette(
+    n_clusters: int,
+    rows: int,
+    cols: int,
+    neuron_to_cluster: np.ndarray,
+) -> list[tuple[int, int, int]]:
+    """Return an RGB palette for `n_clusters` unsupervised SOM classes."""
+    if n_clusters <= len(_EO_PALETTE):
+        return _EO_PALETTE[:n_clusters]
+    colors: list[tuple[int, int, int]] = []
+    denom_r = max(rows - 1, 1)
+    denom_c = max(cols - 1, 1)
+    for cid in range(n_clusters):
+        members = np.where(neuron_to_cluster == cid)[0]
+        if len(members) > 0:
+            rs, cs = np.divmod(members, cols)
+            u = float(rs.mean()) / denom_r
+            v = float(cs.mean()) / denom_c
+        else:
+            u = (cid / max(n_clusters - 1, 1))
+            v = ((cid * 7) % n_clusters) / max(n_clusters - 1, 1)
+        r = int(round(48 + u * 172))
+        g = int(round(176 - 0.55 * u * 110 + 0.35 * v * 48))
+        b = int(round(68 + (1.0 - u) * 70 + v * 105))
+        colors.append((int(np.clip(r, 0, 255)), int(np.clip(g, 0, 255)), int(np.clip(b, 0, 255))))
+    return colors
+
+
+def cluster_som_prototypes(weights: np.ndarray, n_clusters: int | None) -> np.ndarray:
+    """Group (M, D) SOM prototype weights into `n_clusters` deterministic classes.
+
+    When `n_clusters` is None or equals M, each SOM neuron is its own cluster.
+    Otherwise applies Vesanto & Alhoniemi's two-stage SOM clustering via Ward
+    hierarchical linkage on the standardized prototype vectors.
+    """
+    m = len(weights)
+    if n_clusters is None or n_clusters == m:
+        return np.arange(m, dtype=np.int64)
+    if n_clusters < 2 or n_clusters > m:
+        raise ValueError(
+            f"n_clusters ({n_clusters}) must be between 2 and rows*cols ({m}), or None"
+        )
+    from sklearn.cluster import AgglomerativeClustering
+
+    raw_labels = AgglomerativeClustering(n_clusters=n_clusters, linkage="ward").fit_predict(weights)
+    # Canonicalize cluster IDs 0..K-1 by ascending mean standardized signature
+    proto_level = weights.mean(axis=1)
+    order_keys = []
+    for raw_id in range(n_clusters):
+        idx = np.where(raw_labels == raw_id)[0]
+        order_keys.append((float(proto_level[idx].mean()), int(idx.min()), raw_id))
+    order_keys.sort()
+    remap = np.zeros(n_clusters, dtype=np.int64)
+    for new_id, (_, _, raw_id) in enumerate(order_keys):
+        remap[raw_id] = new_id
+    return remap[raw_labels]
+
+
+@dataclass
+class UnsupervisedSomResult:
+    """Output of unsupervised SOM classification over a raster or patch grid."""
+
+    rows: int
+    cols: int
+    epochs: int
+    n_clusters: int
+    cluster_map: np.ndarray  # (H, W) uint16 in 0..n_clusters-1, with 65535 for nodata
+    total_valid: int
+    nodata_count: int
+    quantization_error: float
+    topographic_error: float
+    u_matrix: np.ndarray  # (rows, cols) float64 in [0, 1]
+    neuron_clusters: np.ndarray  # (rows, cols) int64 in 0..n_clusters-1
+    neuron_hits: np.ndarray  # (rows, cols) int64
+    clusters: list[dict]
+    colors: list[tuple[int, int, int]]
+
+
+def classify_unsupervised_som(
+    features: np.ndarray,
+    valid_mask: np.ndarray,
+    out_shape: tuple[int, int],
+    bands: int,
+    *,
+    rows: int = 4,
+    cols: int = 4,
+    n_clusters: int | None = None,
+    epochs: int = 50,
+    sigma: float | None = None,
+    learning_rate: float = 0.7,
+    max_train_samples: int = 25_000,
+    random_state: int = 42,
+) -> UnsupervisedSomResult:
+    """Fit an unsupervised SOM and classify every valid pixel/patch into clusters."""
+    out_h, out_w = out_shape
+    if not np.any(valid_mask):
+        raise ValueError("Raster region contains no valid (non-nodata) values to classify")
+
+    valid_X = np.asarray(features[valid_mask], dtype=np.float64).copy()
+    # Impute isolated per-band NaNs in partially valid pixels with band mean
+    if not np.isfinite(valid_X).all():
+        col_means = np.nanmean(valid_X, axis=0)
+        col_means = np.where(np.isfinite(col_means), col_means, 0.0)
+        nan_rows, nan_cols = np.where(~np.isfinite(valid_X))
+        valid_X[nan_rows, nan_cols] = col_means[nan_cols]
+
+    n_valid = len(valid_X)
+    if n_valid > max_train_samples:
+        rng = np.random.default_rng(random_state)
+        chosen = np.sort(rng.choice(n_valid, size=max_train_samples, replace=False))
+        train_X = valid_X[chosen]
+    else:
+        train_X = valid_X
+
+    som = fit_som(
+        train_X,
+        rows=rows,
+        cols=cols,
+        epochs=epochs,
+        sigma=sigma,
+        learning_rate=learning_rate,
+        random_state=random_state,
+    )
+
+    # Project all valid observations in memory-bounded chunks
+    chunk = 65_536
+    all_bmus = np.empty(n_valid, dtype=np.int64)
+    all_dists = np.empty(n_valid, dtype=np.float64)
+    for start in range(0, n_valid, chunk):
+        end = min(start + chunk, n_valid)
+        b_chunk, d_chunk = som.transform(valid_X[start:end])
+        all_bmus[start:end] = b_chunk
+        all_dists[start:end] = d_chunk
+
+    neuron_to_cluster = cluster_som_prototypes(som.weights, n_clusters)
+    effective_k = int(neuron_to_cluster.max()) + 1
+    valid_cids = neuron_to_cluster[all_bmus].astype(np.uint16)
+
+    flat_map = np.full(out_h * out_w, NODATA_CLUSTER, dtype=np.uint16)
+    flat_map[valid_mask] = valid_cids
+    cluster_map = flat_map.reshape(out_h, out_w)
+
+    neuron_hits = np.bincount(all_bmus, minlength=som.n_neurons).reshape(rows, cols)
+    quant_error = float(all_dists.mean())
+
+    # Compute empirical spectral means per cluster (falling back to prototype mean if empty)
+    raw_means = np.zeros((effective_k, bands), dtype=np.float64)
+    pixel_counts = np.bincount(valid_cids, minlength=effective_k)
+    for cid in range(effective_k):
+        if pixel_counts[cid] > 0:
+            raw_means[cid] = valid_X[valid_cids == cid, :bands].mean(axis=0)
+        else:
+            n_mask = neuron_to_cluster == cid
+            raw_means[cid] = som.weights_denorm[n_mask, :bands].mean(axis=0)
+
+    _, band_profiles = normalized_band_profiles(train_X, raw_means, bands)
+    colors = som_cluster_palette(effective_k, rows, cols, neuron_to_cluster)
+
+    clusters: list[dict] = []
+    for cid in range(effective_k):
+        n_coords = [
+            [int(r), int(c)]
+            for r in range(rows)
+            for c in range(cols)
+            if int(neuron_to_cluster[r * cols + c]) == cid
+        ]
+        count_i = int(pixel_counts[cid])
+        clusters.append(
+            {
+                "cluster_id": cid,
+                "label": f"Cluster {cid + 1}",
+                "color": [int(colors[cid][0]), int(colors[cid][1]), int(colors[cid][2])],
+                "pixel_count": count_i,
+                "fraction": float(count_i / n_valid),
+                "band_means": [float(v) for v in raw_means[cid]],
+                "band_profile": [float(v) for v in band_profiles[cid]],
+                "neurons": n_coords,
+            }
+        )
+
+    return UnsupervisedSomResult(
+        rows=rows,
+        cols=cols,
+        epochs=som.epochs,
+        n_clusters=effective_k,
+        cluster_map=cluster_map,
+        total_valid=n_valid,
+        nodata_count=int(out_h * out_w - n_valid),
+        quantization_error=quant_error,
+        topographic_error=som.topographic_error,
+        u_matrix=som.u_matrix,
+        neuron_clusters=neuron_to_cluster.reshape(rows, cols),
+        neuron_hits=neuron_hits,
+        clusters=clusters,
+        colors=colors,
+    )

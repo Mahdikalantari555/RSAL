@@ -222,3 +222,33 @@ export interface RsalSomResponse {
   hit_grid: number[][];
   cells: RsalSomCell[];
 }
+export interface RsalSomClusterSummary {
+  cluster_id: number;
+  label: string;
+  color: [number, number, number];
+  pixel_count: number;
+  fraction: number;
+  band_means: number[];
+  band_profile: number[];
+  neurons: [number, number][];
+}
+export interface RsalSomClassifyResponse {
+  project_id: number;
+  dataset_id: number;
+  export_id: number;
+  rows: number;
+  cols: number;
+  epochs: number;
+  n_clusters: number;
+  resolution: 'pixel' | 'patch';
+  shape: [number, number];
+  total_valid: number;
+  nodata_count: number;
+  quantization_error: number;
+  topographic_error: number;
+  u_matrix: number[][];
+  neuron_clusters: number[][];
+  neuron_hits: number[][];
+  clusters: RsalSomClusterSummary[];
+  exports: Record<string, string>;
+}

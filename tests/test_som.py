@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import io
+
 import numpy as np
 import pytest
+import rasterio
+from rasterio.transform import from_origin
 
 from app.services.al_service import select_som
 from app.services.som_service import (
@@ -243,3 +247,128 @@ class TestSomApi:
             json={"strategy": "som", "som_rows": 4, "som_cols": 4, "som_cell": [9, 9]},
         )
         assert bad_cell.status_code == 422
+
+
+class TestUnsupervisedSom:
+    def test_pixel_level_unsupervised_classification_without_labels(self, client, project, dataset):
+        # Zero labels and zero supervised training runs!
+        resp = client.post(
+            f"/projects/{project['id']}/som/classify",
+            json={"rows": 4, "cols": 4, "n_clusters": 2, "epochs": 35},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["n_clusters"] == 2
+        assert body["resolution"] == "pixel"
+        assert body["shape"] == [64, 64]
+        assert body["total_valid"] == 64 * 64
+        assert body["nodata_count"] == 0
+        assert sum(c["pixel_count"] for c in body["clusters"]) == 64 * 64
+        assert sum(c["fraction"] for c in body["clusters"]) == pytest.approx(1.0)
+
+        cmap = np.asarray(body["cluster_map"])
+        assert cmap.shape == (64, 64)
+        left_cls = int(np.bincount(cmap[:, :32].ravel()).argmax())
+        right_cls = int(np.bincount(cmap[:, 32:].ravel()).argmax())
+        assert left_cls != right_cls
+        assert float((cmap[:, :32] == left_cls).mean()) > 0.99
+        assert float((cmap[:, 32:] == right_cls).mean()) > 0.99
+
+        # Download the exported GeoTIFF and verify CRS, dimensions, colormap
+        dl = client.get(f"/projects/{project['id']}/download/som")
+        assert dl.status_code == 200
+        with rasterio.open(io.BytesIO(dl.content)) as ds:
+            assert ds.driver == "GTiff"
+            assert ds.width == 64 and ds.height == 64
+            assert ds.crs.to_string() == "EPSG:32631"
+            assert ds.nodata == 65535
+            assert 0 in ds.colormap(1)
+            arr = ds.read(1)
+            assert np.array_equal(arr, cmap)
+
+        exports = client.get(f"/projects/{project['id']}/exports").json()
+        assert any(e["type"] == "som" and e["training_run_id"] is None for e in exports)
+
+    def test_raw_neurons_patch_mode_region_and_auto_download(self, client, project, dataset):
+        pid = project["id"]
+        # Auto-download on a brand-new dataset before calling /som/classify
+        auto_dl = client.get(f"/projects/{pid}/som/download")
+        assert auto_dl.status_code == 200
+        with rasterio.open(io.BytesIO(auto_dl.content)) as ds:
+            assert ds.width == 64 and ds.height == 64
+
+        # Raw SOM neurons (3x3 = 9 unsupervised clusters) in patch mode
+        patch_resp = client.post(
+            f"/projects/{pid}/som/classify",
+            json={"rows": 3, "cols": 3, "resolution": "patch", "epochs": 25},
+        )
+        assert patch_resp.status_code == 200, patch_resp.text
+        pbody = patch_resp.json()
+        assert pbody["n_clusters"] == 9
+        assert pbody["shape"] == [8, 8]
+
+        # Region crop + include_map=False
+        reg_resp = client.post(
+            f"/projects/{pid}/som/classify",
+            json={
+                "rows": 2,
+                "cols": 2,
+                "region": {"x0": 0, "y0": 0, "x1": 32, "y1": 24},
+                "include_map": False,
+            },
+        )
+        assert reg_resp.status_code == 200
+        assert reg_resp.json()["shape"] == [24, 32]
+        assert reg_resp.json()["cluster_map"] is None
+
+    def test_nodata_preserved_and_validation_errors(self, client, project):
+        pid = project["id"]
+        rng = np.random.default_rng(19)
+        arr = rng.normal(100.0, 15.0, size=(3, 32, 32)).astype(np.float32)
+        arr[:, :4, :] = -9999.0  # 4x32 = 128 nodata pixels
+        buf = io.BytesIO()
+        with rasterio.open(
+            buf,
+            "w",
+            driver="GTiff",
+            height=32,
+            width=32,
+            count=3,
+            dtype="float32",
+            nodata=-9999.0,
+            crs="EPSG:32631",
+            transform=from_origin(500000, 4649776, 10, 10),
+        ) as dst:
+            dst.write(arr)
+        up = client.post(
+            f"/projects/{pid}/upload",
+            files={"file": ("nodata_scene.tif", buf.getvalue(), "image/tiff")},
+        ).json()
+
+        res = client.post(
+            f"/projects/{pid}/som/classify",
+            json={"dataset_id": up["id"], "rows": 2, "cols": 2, "epochs": 20},
+        )
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["nodata_count"] == 128
+        assert body["total_valid"] == 32 * 32 - 128
+        cmap = np.asarray(body["cluster_map"])
+        assert (cmap[:4, :] == 65535).all()
+        assert (cmap[4:, :] < 4).all()
+
+        # Validation: n_clusters > rows*cols -> 422, out-of-bounds region -> 422
+        assert (
+            client.post(
+                f"/projects/{pid}/som/classify",
+                json={"rows": 2, "cols": 2, "n_clusters": 10},
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/projects/{pid}/som/classify",
+                json={"region": {"x0": 0, "y0": 0, "x1": 999, "y1": 999}},
+            ).status_code
+            == 422
+        )

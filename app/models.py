@@ -94,8 +94,8 @@ class Export(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     dataset_id: Mapped[int] = mapped_column(Integer)
-    training_run_id: Mapped[int] = mapped_column(Integer)
-    type: Mapped[str] = mapped_column(String(20))  # hard | probability
+    training_run_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    type: Mapped[str] = mapped_column(String(20))  # hard | probability | som
     path: Mapped[str] = mapped_column(String(1024))
     region: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

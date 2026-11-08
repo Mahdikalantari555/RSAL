@@ -111,7 +111,7 @@ export interface CreateProjectInput {
   description: string;
   classes: ClassDefinition[];
 }
-export type WorkspaceView = 'projects' | 'datasets' | 'learning' | 'analytics';
+export type WorkspaceView = 'projects' | 'datasets' | 'unsupervised' | 'learning' | 'analytics';
 export type DrawingTool = 'pan' | 'point' | 'polygon' | 'rectangle';
 export type BandMode = 'true-color' | 'false-color' | 'ndvi' | 'custom';
 export interface RasterMetadata {
@@ -165,4 +165,43 @@ export interface SomQueryOptions {
   somCols?: number;
   somEpochs?: number;
   somCell?: [number, number];
+}
+export type SomPaletteMode = 'distinct' | 'topological' | 'spectral';
+export interface SomClusterSummary {
+  clusterId: number;
+  label: string;
+  color: [number, number, number];
+  pixelCount: number;
+  fraction: number;
+  bandMeans: number[];
+  bandProfile: number[];
+  neurons: [number, number][];
+}
+export interface SomClassifyInput {
+  datasetId?: string;
+  rows: number;
+  cols: number;
+  nClusters?: number | null;
+  epochs?: number;
+  resolution?: 'pixel' | 'patch';
+}
+export interface SomClassification {
+  projectId: string;
+  datasetId: string;
+  exportId: number;
+  rows: number;
+  cols: number;
+  epochs: number;
+  nClusters: number;
+  resolution: 'pixel' | 'patch';
+  shape: [number, number];
+  totalValid: number;
+  nodataCount: number;
+  quantizationError: number;
+  topographicError: number;
+  uMatrix: number[][];
+  neuronClusters: number[][];
+  neuronHits: number[][];
+  clusters: SomClusterSummary[];
+  downloadUrl: string;
 }
