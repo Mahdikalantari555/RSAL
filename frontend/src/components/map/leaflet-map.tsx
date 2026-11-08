@@ -16,11 +16,17 @@ import {
 import L, { type LatLng, type LatLngBoundsExpression, type LatLngExpression } from 'leaflet';
 import { useWorkspace } from '@/stores/workspace';
 import { datasetGeoContext, overlayTransform } from '@/lib/geo';
-import type { Bounds, Dataset, Project, Sample, SampleGeometry } from '@/types';
+import { fieldToDataUrl } from '@/lib/overlay';
+import type { Bounds, Dataset, MapField, Project, Sample, SampleGeometry } from '@/types';
 export type MapAction = { kind: 'in' | 'out' | 'fit' | 'focus' | 'undo'; nonce: number };
 interface Props {
   dataset: Dataset;
   datasetIds: string[];
+  classification: MapField | null;
+  uncertainty: MapField | null;
+  classificationOpacity: number;
+  uncertaintyOpacity: number;
+  hiddenClasses: string[];
   rasterUrl: string;
   project: Project;
   samples: Sample[];
@@ -91,6 +97,45 @@ function Controller({
  * axis-aligned rectangle that would put the imagery up to a few patches away
  * from the labels drawn on top of it.
  */
+/**
+ * A model-derived field painted one pixel per grid cell, then warped onto the
+ * display bbox exactly like the imagery. Cells therefore sit on the same ground
+ * as the patch footprints, at every zoom.
+ */
+function FieldOverlay({
+  dataset,
+  field,
+  opacity,
+  hiddenClassIndexes,
+}: {
+  dataset: Dataset;
+  field: MapField;
+  opacity: number;
+  hiddenClassIndexes: number[];
+}) {
+  const visible = useMemo(() => {
+    if (field.layer !== 'hard' || !hiddenClassIndexes.length) return field;
+    const hidden = new Set(hiddenClassIndexes);
+    return {
+      ...field,
+      valid: field.valid.map((row, r) =>
+        row.map((ok, c) => ok && !hidden.has(Number(field.values[r][c]))),
+      ),
+    };
+  }, [field, hiddenClassIndexes]);
+  const source = useMemo(() => fieldToDataUrl(visible, 1), [visible]);
+  if (!source) return null;
+  return (
+    <ImageOverlay
+      url={source}
+      bounds={asLeaflet(dataset.bounds)}
+      opacity={opacity / 100}
+      className={`field-overlay field-overlay-${field.layer}`}
+      zIndex={field.layer === 'hard' ? 3 : 4}
+    />
+  );
+}
+
 function RasterOverlay({
   dataset,
   rasterUrl,
@@ -270,6 +315,11 @@ function DrawControls({ onDraw, action }: { onDraw: Props['onDraw']; action: Map
 export default function LeafletMap({
   dataset,
   datasetIds,
+  classification,
+  uncertainty,
+  classificationOpacity,
+  uncertaintyOpacity,
+  hiddenClasses,
   rasterUrl,
   project,
   samples,
@@ -347,6 +397,24 @@ export default function LeafletMap({
         rasterUrl={rasterUrl}
         opacity={opacity}
       />
+      {classification && (
+        <FieldOverlay
+          dataset={dataset}
+          field={classification}
+          opacity={classificationOpacity}
+          hiddenClassIndexes={hiddenClasses.map((name) =>
+            classification.classes.indexOf(name),
+          )}
+        />
+      )}
+      {uncertainty && (
+        <FieldOverlay
+          dataset={dataset}
+          field={uncertainty}
+          opacity={uncertaintyOpacity}
+          hiddenClassIndexes={[]}
+        />
+      )}
       <Controller dataset={dataset} action={action} selected={selected} />
       <DrawControls onDraw={onDraw} action={action} />
       {visibleSamples

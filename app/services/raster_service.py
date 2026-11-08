@@ -116,6 +116,25 @@ def load_raster(path: str | Path, nodata: float | None, max_elements: int) -> np
     return arr
 
 
+def patch_validity(arr: np.ndarray, grid: PatchGrid) -> np.ndarray:
+    """(n_patches,) bool: True when the patch region contains any valid pixel.
+
+    Patches with no valid pixels produce all-zero features (`patch_features`
+    maps NaN to 0) and would otherwise receive a confident but meaningless
+    prediction — which is how nodata collars end up painted as land cover.
+    """
+    valid = np.zeros(len(grid.ys) * len(grid.xs), dtype=bool)
+    i = 0
+    for y in grid.ys:
+        for x in grid.xs:
+            patch = arr[:, y : y + grid.patch_h, x : x + grid.patch_w]
+            # Cheap pre-check: a mostly-nodata patch is still useful if part of it
+            # has data, so only fully-empty regions are dropped.
+            valid[i] = bool(np.any(~np.isnan(patch[:, ::4, ::4]))) if patch.size else False
+            i += 1
+    return valid
+
+
 def patch_features(arr: np.ndarray, grid: PatchGrid) -> np.ndarray:
     """Compute (n_patches, bands*4) feature matrix in row-major grid order."""
     bands = arr.shape[0]

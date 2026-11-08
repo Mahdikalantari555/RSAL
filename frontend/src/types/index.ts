@@ -132,6 +132,37 @@ export interface CreateProjectInput {
 export type WorkspaceView = 'projects' | 'datasets' | 'learning' | 'analytics';
 export type DrawingTool = 'pan' | 'point' | 'polygon' | 'rectangle';
 export type BandMode = 'true-color' | 'false-color' | 'ndvi' | 'custom';
+
+/** Model-derived map layers, toggleable in the map view. */
+export type MapLayer = 'hard' | 'uncertainty';
+export type UncertaintyMethod = 'entropy' | 'margin' | 'least_confidence';
+export type MapExportFormat = 'tif' | 'png' | 'csv';
+
+/** A grid-aligned field returned by the map adapter. */
+export interface MapField {
+  layer: MapLayer;
+  method: string | null;
+  projectId: string;
+  datasetId: string;
+  modelIteration: number;
+  trainingRunId: number;
+  classes: string[];
+  /** Class colours from the backend palette (same colours the exports use). */
+  colors: string[];
+  grid: { rows: number; cols: number; patchSize: number; stride: number };
+  /** rows x cols; null where the patch has no valid pixels. */
+  values: (number | null)[][];
+  valid: boolean[][];
+  min: number;
+  max: number;
+  /** True when a newer training run exists than the one this field came from. */
+  stale: boolean;
+}
+
+export interface LayerSettings {
+  visible: boolean;
+  opacity: number;
+}
 export interface RasterMetadata {
   bands: number;
   width: number;

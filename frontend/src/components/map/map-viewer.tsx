@@ -25,6 +25,9 @@ import {
 import { toast } from 'sonner';
 import { useWorkspace } from '@/stores/workspace';
 import { renderRaster } from '@/lib/geotiff';
+import { useMapField } from '@/hooks/use-projects';
+import { api } from '@/lib/api';
+import { methodLabel, UNCERTAINTY_RAMP } from '@/lib/overlay';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dot, EmptyState } from '@/components/ui/common';
@@ -33,9 +36,11 @@ import type {
   Dataset,
   DrawingTool,
   GeorefReason,
+  MapExportFormat,
   Project,
   Sample,
   SampleGeometry,
+  UncertaintyMethod,
 } from '@/types';
 import type { MapAction } from './leaflet-map';
 const LeafletMap = dynamic(() => import('./leaflet-map'), {
@@ -91,6 +96,18 @@ export function MapViewer({
     toggleLabels,
     showSuggestions,
     toggleSuggestions,
+    showClassification,
+    showUncertainty,
+    toggleClassification,
+    toggleUncertainty,
+    classificationOpacity,
+    uncertaintyOpacity,
+    setClassificationOpacity,
+    setUncertaintyOpacity,
+    uncertaintyMethod,
+    setUncertaintyMethod,
+    hiddenClasses,
+    toggleClassVisibility,
     drafts,
     saveDraft,
     removeDraft,
@@ -102,6 +119,28 @@ export function MapViewer({
   const [action, setAction] = useState<MapAction | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const command = (kind: MapAction['kind']) => setAction({ kind, nonce: Date.now() });
+  const hasModel = !!project.modelVersion;
+  const classification = useMapField(project.id, {
+    layer: 'hard',
+    method: uncertaintyMethod,
+    datasetId: dataset?.id,
+    enabled: showClassification && hasModel && !!dataset,
+  });
+  const uncertainty = useMapField(project.id, {
+    layer: 'uncertainty',
+    method: uncertaintyMethod,
+    datasetId: dataset ? dataset.id : undefined,
+    enabled: showUncertainty && hasModel && !!dataset,
+  });
+  useEffect(() => {
+    const error = classification.error ?? uncertainty.error;
+    if (error) toast.error(error.message);
+  }, [classification.error, uncertainty.error]);
+  const modelBandsMismatch =
+    hasModel &&
+    dataset &&
+    (classification.data?.classes.length ?? 0) > 0 &&
+    classification.error?.message.includes('bands');
   const raster = useQuery({
     queryKey: ['raster', dataset?.id, bandMode, customBands],
     // Shares the cached, range-reading handle with the review thumbnails, so
@@ -207,6 +246,11 @@ export function MapViewer({
           <LeafletMap
             dataset={dataset}
             datasetIds={datasets.map((d) => d.id)}
+            classification={showClassification ? classification.data ?? null : null}
+            uncertainty={showUncertainty ? uncertainty.data ?? null : null}
+            classificationOpacity={classificationOpacity}
+            uncertaintyOpacity={uncertaintyOpacity}
+            hiddenClasses={hiddenClasses}
             rasterUrl={rasterUrl}
             project={project}
             samples={samples}
@@ -365,6 +409,131 @@ export function MapViewer({
               value={opacity}
               onChange={(e) => setOpacity(Number(e.target.value))}
             />
+
+            <div className="layer-divider">
+              <span>MODEL LAYERS</span>
+              {hasModel && (
+                <span className="layer-caption">
+                  1 cell = {classification.data?.grid.patchSize ?? dataset.patchGrid?.patchSize ?? 32} px
+                </span>
+              )}
+            </div>
+
+            {!hasModel ? (
+              <p className="layer-note">
+                Train a model to see its classification and where it is unsure.
+              </p>
+            ) : modelBandsMismatch ? (
+              <p className="layer-note">
+                This model was trained on a different number of bands than this scene has.
+              </p>
+            ) : (
+              <>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={showClassification}
+                    onChange={toggleClassification}
+                  />
+                  <span>Classification</span>
+                  {classification.isFetching && <LoaderCircle size={11} className="spin" />}
+                </label>
+                {showClassification && (
+                  <>
+                    <input
+                      aria-label="Classification opacity"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={classificationOpacity}
+                      onChange={(e) => setClassificationOpacity(Number(e.target.value))}
+                    />
+                    <div className="layer-classes">
+                      {(classification.data?.classes ?? project.classes.map((c) => c.name)).map(
+                        (name, index) => (
+                          <button
+                            key={name}
+                            className={cn(
+                              'layer-class',
+                              !hiddenClasses.includes(name) && 'active',
+                            )}
+                            onClick={() => toggleClassVisibility(name)}
+                            title={`${hiddenClasses.includes(name) ? 'Show' : 'Hide'} ${name}`}
+                          >
+                            <Dot
+                              color={
+                                classification.data?.colors?.[index] ??
+                                project.classes[index]?.color ??
+                                '#d8bd68'
+                              }
+                            />
+                            {name}
+                          </button>
+                        ),
+                      )}
+                    </div>
+                  </>
+                )}
+
+                <label>
+                  <input type="checkbox" checked={showUncertainty} onChange={toggleUncertainty} />
+                  <span>Uncertainty</span>
+                  {uncertainty.isFetching && <LoaderCircle size={11} className="spin" />}
+                </label>
+                {showUncertainty && (
+                  <>
+                    <select
+                      className="input layer-method"
+                      aria-label="Uncertainty method"
+                      value={uncertaintyMethod}
+                      onChange={(e) => setUncertaintyMethod(e.target.value as UncertaintyMethod)}
+                    >
+                      <option value="entropy">Entropy</option>
+                      <option value="margin">Margin</option>
+                      <option value="least_confidence">Least confidence</option>
+                    </select>
+                    <input
+                      aria-label="Uncertainty opacity"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={uncertaintyOpacity}
+                      onChange={(e) => setUncertaintyOpacity(Number(e.target.value))}
+                    />
+                  </>
+                )}
+
+                {(classification.data?.stale || uncertainty.data?.stale) && (
+                  <p className="layer-stale">
+                    These maps come from iteration{' '}
+                    {uncertainty.data?.modelIteration ?? classification.data?.modelIteration} —
+                    a newer training run exists.
+                  </p>
+                )}
+
+                {(showClassification || showUncertainty) && (
+                  <div className="layer-export">
+                    <span>Export {showUncertainty ? 'uncertainty' : 'classification'}</span>
+                    <div>
+                      {(['tif', 'png', 'csv'] as MapExportFormat[]).map((format) => (
+                        <a
+                          key={format}
+                          className="layer-export-link"
+                          href={api.mapExportUrl(project.id, {
+                            layer: showUncertainty ? 'uncertainty' : 'hard',
+                            format,
+                            method: uncertaintyMethod,
+                            datasetId: dataset.id,
+                          })}
+                        >
+                          {format.toUpperCase()}
+                        </a>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
         {tool !== 'pan' && (
@@ -428,7 +597,31 @@ export function MapViewer({
             </button>
           ))}
         </div>
-        <span className="legend-count">{project.classes.length} classes</span>
+        {showUncertainty && uncertainty.data && (
+          <div className="uncertainty-legend">
+            <span className="legend-heading">
+              UNCERTAINTY · {methodLabel(uncertaintyMethod).toUpperCase()}
+            </span>
+            <div
+              className="uncertainty-ramp"
+              style={{
+                background: `linear-gradient(90deg, ${UNCERTAINTY_RAMP.join(', ')})`,
+              }}
+            />
+            <div className="uncertainty-scale">
+              <span>{uncertainty.data.min.toFixed(2)} confident</span>
+              <span>{uncertainty.data.max.toFixed(2)} unsure</span>
+            </div>
+            <span className="uncertainty-note">
+              Colour stretched over this scene&apos;s range
+            </span>
+          </div>
+        )}
+        <span className="legend-count">
+          {showClassification || showUncertainty
+            ? `iter ${uncertainty.data?.modelIteration ?? classification.data?.modelIteration ?? project.iteration}`
+            : `${project.classes.length} classes`}
+        </span>
       </div>
       <div className="map-metadata">
         <span>

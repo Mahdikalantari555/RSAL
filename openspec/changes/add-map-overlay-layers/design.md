@@ -63,6 +63,26 @@ Consequences, accepted deliberately:
 D1 below therefore describes the *optional* compact endpoint kept for large
 scenes; it is no longer on the critical path for showing the layer.
 
+**As built (divergence from the decision above).** The field endpoint did land on
+the critical path, because `POST /predict` returns the full probability tensor
+(classes × rows × cols, float32) and shipping that to the browser just to paint
+one scalar field is wasteful on real scenes; the export was server-side anyway.
+So the single source of truth for the maths moved to
+`inference_service.uncertainty_scores` and **both** consumers now read from it:
+
+- `GET /predict/map` computes the field once, server-side, and serves the scalar
+  `values` grid the map paints (`persist=False`, so a read never writes an
+  export row);
+- the PNG/CSV/GeoTIFF exporters call the same function, so what is exported is
+  bit-identical to what is displayed, with no cross-implementation tolerance to
+  police;
+- `POST /predict` still carries `uncertainty_map` / `valid_map` for the batch
+  workflow, also from that function.
+
+Read-only paths (`/predict/map`, `.png`, `.csv`, `/legend`) never persist a
+GeoTIFF; only `/download/{type}` does. Listing endpoints collapse to the newest
+artifact per `(dataset, type, method)` so repeated reads cannot inflate history.
+
 ### D1. One scalar field endpoint (for large scenes)
 `GET /projects/{id}/predict/map?dataset_id=&layer=hard|uncertainty&method=&iteration=`
 returns:
@@ -97,6 +117,21 @@ alternative — a second implementation in `inference_service` — would let the
 disagree with the ranking that selected the batch, which is the one property
 this feature exists to make visible. Method defaults to `entropy`; `least_confidence`
 and `margin` are selectable in the layer panel and are part of the cache key.
+
+### D2b. Colour has exactly one definition per layer (as built)
+The palette already had a drift test; the uncertainty ramp did not, and the
+first build shipped *two* ramps — a three-stop cool→warm ramp on screen and a
+hard-coded blue→red formula in the PNG exporter — so the exported picture did
+not match the map. Both sides now read the same three stops
+(`#3c78c8 → #f0e6a8 → #e0663c`) and a test asserts the frontend array equals
+`inference_service.UNCERTAINTY_RAMP`, mirroring the class-palette guard.
+
+The ramp is also **relative to the field's own `[min, max]`**, not to absolute
+0..1. A trained model's entropy on an easy scene sits in a narrow band (here
+0.68–1.00), so an absolute ramp painted the entire map one shade of orange and
+communicated nothing. Stretching to the field's range makes structure visible;
+the legend prints both endpoints and says the colour is stretched, so the
+numbers remain the contract.
 
 ### D3. Classes are painted from the UI palette, everywhere
 The backend's private `_palette()` is replaced by a single exported

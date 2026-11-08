@@ -57,6 +57,38 @@ Browser ── /api/* (Next.js route handlers = BFF adapter) ── RSAL_API_URL
 - Map layers are scoped to the active dataset: samples and drafts belonging to
   another scene are never drawn on top of the current one.
 
+### Model layers
+
+Once a project has a checkpoint, the map can show what the model thinks about
+the scene on screen:
+
+- **Classification** — one flat colour per patch cell, from the shared class
+  palette (`lib/palette.ts`, identical to the backend's `CLASS_PALETTE`).
+  Individual classes can be hidden, which is how you check one class at a time.
+- **Uncertainty** — the scalar field from `al_service.uncertainty_scores`
+  (`entropy`, `margin` or `least_confidence`), painted on a cool→warm ramp.
+  The ramp is stretched over the field's own min/max because a trained model's
+  entropy rarely spans 0..1; the legend prints both endpoints and says so.
+
+Both layers default **off**, persist across reloads, have independent opacity
+sliders, and paint as a single `ImageOverlay` per field (`image-rendering:
+pixelated`, one canvas pixel per cell) so panning and zooming cost nothing. If a
+newer training run exists than the one that produced the field, the panel says
+so instead of silently showing stale colours; if the model's band count does not
+match the dataset, the layers are hidden with an explanation.
+
+`src/lib/layers.ts` holds the vocabulary shared by the server routes and the
+browser (`MAP_LAYERS`, `UNCERTAINTY_METHODS`, `isUncertaintyMethod`);
+`src/lib/overlay.ts` holds the painting (`fieldToDataUrl`, `uncertaintyColor`,
+`UNCERTAINTY_RAMP`). `src/lib/server/map-routes.ts` is the BFF side, wrapped by
+the thin `app/api/projects/[id]/map/**` route handlers.
+
+Exports download the field you are looking at: GeoTIFF (with colormap, `grid`
+and `method` tags), PNG (the same picture, invalid cells transparent) or CSV
+(one row per cell with class, probability, uncertainty and pixel windows). The
+layers panel links them per layer; the analytics view has a **Maps** card
+listing every export with its iteration and staleness.
+
 ## Run locally
 
 Start the backend first (repo root):
@@ -72,7 +104,7 @@ cd frontend
 npm install
 cp .env.example .env.local        # optional; defaults to http://localhost:8000
 npm run dev                       # http://localhost:3000
-npm test                          # geo transform unit tests (node:test)
+npm test                          # geo + overlay unit tests (node:test)
 npm run typecheck && npm run lint
 ```
 

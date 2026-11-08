@@ -111,10 +111,25 @@ then pin the reported `name==version` set into `requirements.lock.txt`).
      -d '{"region": {"x0": 0, "y0": 0, "x1": 512, "y1": 512}}'   # region optional
    curl -OJ localhost:8000/projects/1/download/hard
    curl -OJ localhost:8000/projects/1/download/probability
+   curl -OJ 'localhost:8000/projects/1/download/uncertainty?method=entropy'
    ```
-   Maps are produced at patch-grid resolution. Hard maps are uint16 GeoTIFFs
-   (pixel = 0-based class index, colormap + `classes` tag included); probability
-   maps are float32 with one band per class. Both carry the source CRS/transform.
+   Maps are produced at patch-grid resolution on a uniform stride lattice
+   (clamped edge cells are padded with nodata rather than stretched). Hard maps
+   are uint16 GeoTIFFs (pixel = 0-based class index, colormap + `classes`/
+   `grid`/`method` tags); probability maps are float32 with one band per class;
+   uncertainty maps are float32 scalars. All carry the source CRS/transform.
+
+   The same fields drive the map UI and the lighter exports:
+
+   | Endpoint | Purpose |
+   |---|---|
+   | `GET /projects/{id}/predict/map?layer=hard\|uncertainty&method=&dataset_id=&iteration=` | One scalar field (`values`, `valid`, `grid`, `classes`, `colors`, `min`/`max`, `stale`) for painting the layer |
+   | `GET /projects/{id}/exports/{hard\|uncertainty}.{png,csv}` | Rendered/row-wise export of exactly that field (`probability` is GeoTIFF-only) |
+   | `GET /projects/{id}/exports` | Newest artifact per `(dataset, type, method)`, with `iteration`, `method`, `stale` |
+   | `GET /legends/classes` | The palette, so a class has one colour everywhere |
+
+   Reading a field, a PNG, a CSV or a legend never writes an export row; only
+   `GET /download/{type}` persists a GeoTIFF.
 
 A full scripted walkthrough against a running server:
 

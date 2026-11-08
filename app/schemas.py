@@ -218,7 +218,41 @@ class PredictResponse(BaseModel):
     stride: int
     hard_map: list[list[int]] | None = None
     probability_map: list[list[list[float]]] | None = None  # [class][row][col]
+    uncertainty_map: list[list[float | None]] | None = None  # per-patch, 0..1
+    uncertainty_method: str | None = None
+    valid_map: list[list[bool]] | None = None  # False = patch has no valid pixels
     exports: dict[str, str]  # type -> download URL
+
+
+class MapGridOut(BaseModel):
+    """Where the patch cells live in the source raster."""
+
+    rows: int
+    cols: int
+    patch_size: int
+    stride: int
+    region: Region
+
+
+class MapFieldOut(BaseModel):
+    """One grid-aligned scalar field for the map layers (classification/uncertainty)."""
+
+    layer: str  # hard | uncertainty
+    method: str | None = None
+    project_id: int
+    dataset_id: int
+    model_iteration: int
+    training_run_id: int
+    classes: list[str]
+    grid: MapGridOut
+    # rows x cols; class indices for `hard`, 0..1 floats (None where invalid)
+    # for `uncertainty`.
+    values: list[list[int | float | None]]
+    valid: list[list[bool]]
+    min: float | None = None
+    max: float | None = None
+    stale: bool = False
+    exports: dict[str, str]
 
 
 class ExportOut(BaseModel):
@@ -231,3 +265,9 @@ class ExportOut(BaseModel):
     type: str
     region: dict | None
     created_at: datetime
+    # Derived for the UI: which iteration produced it, whether a newer training
+    # run exists, and the dataset filename so a list entry is self-describing.
+    iteration: int | None = None
+    method: str | None = None
+    stale: bool = False
+    dataset_name: str | None = None

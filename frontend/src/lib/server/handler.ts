@@ -453,6 +453,10 @@ export async function actionHandler(
       return json(samples);
     }
 
+    if (action === 'exports' && method === 'GET') {
+      return json(await rsalGet<unknown[]>(`${base}/exports`));
+    }
+
     if (action === 'history' && method === 'GET')
       return json(await rsalGet<RsalLabel[]>(`${base}/history`));
 

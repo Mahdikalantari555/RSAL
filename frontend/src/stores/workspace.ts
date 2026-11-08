@@ -1,7 +1,13 @@
 'use client';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import type { BandMode, DrawingTool, LabelInput, WorkspaceView } from '@/types';
+import type {
+  BandMode,
+  DrawingTool,
+  LabelInput,
+  UncertaintyMethod,
+  WorkspaceView,
+} from '@/types';
 interface WorkspaceState {
   view: WorkspaceView;
   projectId: string;
@@ -16,6 +22,14 @@ interface WorkspaceState {
   opacity: number;
   showLabels: boolean;
   showSuggestions: boolean;
+  /** Model-derived layers are opt-in: a map that appears unrequested reads as
+      the imagery itself rather than a model output. */
+  showClassification: boolean;
+  showUncertainty: boolean;
+  classificationOpacity: number;
+  uncertaintyOpacity: number;
+  uncertaintyMethod: UncertaintyMethod;
+  hiddenClasses: string[];
   drafts: Record<string, LabelInput>;
   mobileReview: boolean;
   setView: (view: WorkspaceView) => void;
@@ -31,6 +45,12 @@ interface WorkspaceState {
   setOpacity: (opacity: number) => void;
   toggleLabels: () => void;
   toggleSuggestions: () => void;
+  toggleClassification: () => void;
+  toggleUncertainty: () => void;
+  setClassificationOpacity: (opacity: number) => void;
+  setUncertaintyOpacity: (opacity: number) => void;
+  setUncertaintyMethod: (method: UncertaintyMethod) => void;
+  toggleClassVisibility: (name: string) => void;
   saveDraft: (draft: LabelInput) => void;
   removeDraft: (id: string) => void;
   clearDrafts: () => void;
@@ -51,6 +71,12 @@ export const useWorkspace = create<WorkspaceState>()(
       opacity: 100,
       showLabels: true,
       showSuggestions: true,
+      showClassification: false,
+      showUncertainty: false,
+      classificationOpacity: 55,
+      uncertaintyOpacity: 65,
+      uncertaintyMethod: 'entropy',
+      hiddenClasses: [],
       drafts: {},
       mobileReview: false,
       setView: (view) => set({ view, sidebarOpen: false }),
@@ -63,6 +89,7 @@ export const useWorkspace = create<WorkspaceState>()(
           view: 'learning',
           bandMode: 'true-color',
           sidebarOpen: false,
+          hiddenClasses: [],
         }),
       selectSample: (selectedSampleId) => set({ selectedSampleId }),
       selectDataset: (selectedDatasetId) => set({ selectedDatasetId, bandMode: 'true-color' }),
@@ -75,6 +102,18 @@ export const useWorkspace = create<WorkspaceState>()(
       setOpacity: (opacity) => set({ opacity }),
       toggleLabels: () => set((s) => ({ showLabels: !s.showLabels })),
       toggleSuggestions: () => set((s) => ({ showSuggestions: !s.showSuggestions })),
+      toggleClassification: () =>
+        set((s) => ({ showClassification: !s.showClassification })),
+      toggleUncertainty: () => set((s) => ({ showUncertainty: !s.showUncertainty })),
+      setClassificationOpacity: (classificationOpacity) => set({ classificationOpacity }),
+      setUncertaintyOpacity: (uncertaintyOpacity) => set({ uncertaintyOpacity }),
+      setUncertaintyMethod: (uncertaintyMethod) => set({ uncertaintyMethod }),
+      toggleClassVisibility: (name) =>
+        set((s) => ({
+          hiddenClasses: s.hiddenClasses.includes(name)
+            ? s.hiddenClasses.filter((value) => value !== name)
+            : [...s.hiddenClasses, name],
+        })),
       saveDraft: (draft) => set((s) => ({ drafts: { ...s.drafts, [draft.sampleId]: draft } })),
       removeDraft: (id) =>
         set((s) => ({
@@ -84,7 +123,16 @@ export const useWorkspace = create<WorkspaceState>()(
     }),
     {
       name: 'terralab-workspace-v2',
-      partialize: (s) => ({ theme: s.theme, projectId: s.projectId, drafts: s.drafts }),
+      partialize: (s) => ({
+        theme: s.theme,
+        projectId: s.projectId,
+        drafts: s.drafts,
+        showClassification: s.showClassification,
+        showUncertainty: s.showUncertainty,
+        classificationOpacity: s.classificationOpacity,
+        uncertaintyOpacity: s.uncertaintyOpacity,
+        uncertaintyMethod: s.uncertaintyMethod,
+      }),
     },
   ),
 );

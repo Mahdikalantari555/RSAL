@@ -5,13 +5,47 @@ import { toast } from 'sonner';
 import { api } from '@/lib/api';
 import { errorMessage } from '@/lib/utils';
 import { useReviewQueue } from '@/stores/review-queue';
-import type { CreateProjectInput, LabelInput, Sample } from '@/types';
+import type {
+  CreateProjectInput,
+  LabelInput,
+  MapLayer,
+  Sample,
+  UncertaintyMethod,
+} from '@/types';
 export const keys = {
   projects: ['projects'] as const,
   dataset: (id: string) => ['project', id, 'dataset'] as const,
   labels: (id: string) => ['project', id, 'labels'] as const,
   metrics: (id: string) => ['project', id, 'metrics'] as const,
+  mapField: (
+    id: string,
+    layer: MapLayer,
+    method: UncertaintyMethod,
+    datasetId: string | undefined,
+  ) => ['project', id, 'map', layer, method, datasetId ?? 'all'] as const,
 };
+
+/**
+ * A model-derived map layer. Keyed by dataset + layer + method so switching the
+ * uncertainty method or the active dataset reuses or refetches exactly one field.
+ */
+export function useMapField(
+  id: string,
+  options: {
+    layer: MapLayer;
+    method: UncertaintyMethod;
+    datasetId: string | undefined;
+    enabled: boolean;
+  },
+) {
+  return useQuery({
+    queryKey: keys.mapField(id, options.layer, options.method, options.datasetId),
+    queryFn: () => api.mapField(id, options),
+    enabled: !!id && options.enabled,
+    staleTime: 60_000,
+    retry: 0,
+  });
+}
 export function useProjects() {
   return useQuery({ queryKey: keys.projects, queryFn: api.projects });
 }
