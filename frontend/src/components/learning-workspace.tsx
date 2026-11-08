@@ -19,6 +19,7 @@ import { MapViewer } from './map/map-viewer';
 import { SampleReview } from './sample-review';
 import { QueryBatchDialog } from './workspace-dialogs';
 import { AnalyticsPreview } from './analytics';
+import { SomExplorer } from './som-explorer';
 import type { Project } from '@/types';
 export function LearningWorkspace({
   project,
@@ -149,6 +150,7 @@ export function LearningWorkspace({
           {Object.keys(drafts).length ? 'Drafts saved locally' : 'Workspace up to date'}
         </span>
       </div>
+      <SomExplorer project={project} compact />
       <AnalyticsPreview project={project} />
       <QueryBatchDialog project={project} open={queryOpen} onOpenChange={setQueryOpen} />
     </>

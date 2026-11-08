@@ -20,7 +20,8 @@ talks to the backend through a server-side adapter; there is no demo mode.
 | Project management | `POST/GET /projects`, `GET/PUT/DELETE /projects/{id}` |
 | Dataset ingestion | `POST /projects/{id}/upload` (GeoTIFF), `GET /projects/{id}/dataset`, `GET .../dataset/{did}/file`, `DELETE .../dataset/{did}` |
 | Label management | `POST/GET /projects/{id}/labels`, `GET /projects/{id}/history`, `DELETE /projects/{id}/labels/{sample_id}` |
-| Active learning query | `POST /projects/{id}/query` (uncertainty / diversity / hybrid) |
+| Active learning query | `POST /projects/{id}/query` (uncertainty / diversity / hybrid / som) |
+| Self-organizing map | `GET/POST /projects/{id}/som` (Kohonen U-Matrix, cluster summaries, spectral prototypes) |
 | Model training | `POST /projects/{id}/train` (rf / lightgbm), `GET /projects/{id}/metrics` |
 | Inference & export | `POST /projects/{id}/predict`, `GET /projects/{id}/download/{hard\|probability}` |
 
@@ -164,6 +165,10 @@ verified end-to-end by:
 - **Diversity**: greedy k-center (farthest-first) over standardized embeddings,
   seeded with already-labeled patches when available.
 - **Hybrid**: top `batch_size × 5` uncertainty pool, then k-center within the pool.
+- **Self-organizing map (SOM)**: PCA-initialized batch Kohonen SOM over standardized
+  patch embeddings with U-Matrix boundary distances, quantization & topographic
+  error metrics, per-neuron spectral prototypes, and topological active-learning
+  sampling (`strategy: "som"`, including single-neuron `som_cell` targeting).
 - **Evaluation**: stratified hold-out split when data allows (≥8 samples, ≥2 per
   class), otherwise training-set metrics flagged with `evaluation: "train"`.
   The deployed checkpoint is always refit on all labeled data.

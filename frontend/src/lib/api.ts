@@ -9,6 +9,8 @@ import type {
   Metrics,
   Project,
   Sample,
+  SomData,
+  SomQueryOptions,
   UncertaintyMethod,
 } from '@/types';
 const BASE = '/api/projects';
@@ -51,10 +53,33 @@ export const api = {
   dataset: (id: string) => request<Dataset[]>(`/${id}/dataset`),
   savedLabels: (id: string) => request<Sample[]>(`/${id}/labels`),
   metrics: (id: string) => request<Metrics>(`/${id}/metrics`),
-  query: (id: string, batchSize: number, strategy: string, datasetId?: string) =>
+  som: (
+    id: string,
+    params?: { datasetId?: string; rows?: number; cols?: number; epochs?: number },
+  ) => {
+    const qs = new URLSearchParams();
+    if (params?.datasetId) qs.set('datasetId', params.datasetId);
+    if (params?.rows) qs.set('rows', String(params.rows));
+    if (params?.cols) qs.set('cols', String(params.cols));
+    if (params?.epochs) qs.set('epochs', String(params.epochs));
+    const suffix = qs.toString() ? `?${qs.toString()}` : '';
+    return request<SomData>(`/${id}/som${suffix}`);
+  },
+  query: (
+    id: string,
+    batchSize: number,
+    strategy: string,
+    datasetId?: string,
+    options?: SomQueryOptions,
+  ) =>
     request<{ samples: Sample[]; existing: boolean }>(`/${id}/query`, {
       method: 'POST',
-      body: JSON.stringify({ batchSize, strategy, ...(datasetId ? { datasetId } : {}) }),
+      body: JSON.stringify({
+        batchSize,
+        strategy,
+        ...(datasetId ? { datasetId } : {}),
+        ...(options ?? {}),
+      }),
     }),
   labels: (id: string, labels: LabelInput[]) =>
     request<{ saved: number }>(`/${id}/labels`, {

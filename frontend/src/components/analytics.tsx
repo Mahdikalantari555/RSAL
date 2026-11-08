@@ -26,7 +26,14 @@ import { downloadCSV, downloadJSON, formatNumber } from '@/lib/utils';
 import { Button } from './ui/button';
 import { Badge, Dot, EmptyState, ErrorState, Skeleton } from './ui/common';
 import { MetricCards } from './metric-cards';
-import type { Iteration, MapExportFormat, MapLayer, Metrics, Project } from '@/types';
+import { SomExplorer } from './som-explorer';
+import type {
+  Iteration,
+  MapExportFormat,
+  MapLayer,
+  Metrics,
+  Project,
+} from '@/types';
 
 /** An export row as the adapter reports it. */
 interface ExportRow {
@@ -634,6 +641,7 @@ export function Analytics({ project }: { project: Project }) {
                 )}
               </article>
             </div>
+            <SomExplorer project={project} />
             <IterationHistory metrics={data} />
             <MapExports project={project} />
           </>

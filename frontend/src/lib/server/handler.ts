@@ -12,6 +12,7 @@ import type {
   Metrics,
   Project,
   Sample,
+  SomData,
 } from '@/types';
 import { classesFromNames, CLASS_COLORS } from '@/lib/palette';
 import {
@@ -25,6 +26,7 @@ import {
   type RsalMetrics,
   type RsalProject,
   type RsalQueryResponse,
+  type RsalSomResponse,
   type RsalTrainResponse,
 } from './rsal';
 import {
@@ -261,7 +263,47 @@ const STRATEGIES: Record<string, { strategy: string; method?: string }> = {
   'least-confidence': { strategy: 'uncertainty', method: 'least_confidence' },
   diversity: { strategy: 'diversity' },
   hybrid: { strategy: 'hybrid', method: 'entropy' },
+  som: { strategy: 'som', method: 'entropy' },
 };
+
+function toSomData(s: RsalSomResponse): SomData {
+  return {
+    projectId: String(s.project_id),
+    datasetId: String(s.dataset_id),
+    rows: s.rows,
+    cols: s.cols,
+    epochs: s.epochs,
+    totalPatches: s.total_patches,
+    labeledPatches: s.labeled_patches,
+    activeNeurons: s.active_neurons,
+    quantizationError: s.quantization_error,
+    topographicError: s.topographic_error,
+    modelIteration: s.model_iteration,
+    bands: s.bands,
+    classes: s.classes,
+    uMatrix: s.u_matrix,
+    hitGrid: s.hit_grid,
+    cells: s.cells.map((c) => ({
+      row: c.row,
+      col: c.col,
+      hitCount: c.hit_count,
+      labeledCount: c.labeled_count,
+      unlabeledCount: c.unlabeled_count,
+      uValue: c.u_value,
+      quantizationError: c.quantization_error,
+      dominantLabel: c.dominant_label,
+      labelCounts: c.label_counts,
+      predictedClass: c.predicted_class,
+      predictionCounts: c.prediction_counts,
+      meanConfidence: c.mean_confidence,
+      meanUncertainty: c.mean_uncertainty,
+      bandMeans: c.band_means,
+      bandProfile: c.band_profile,
+      representativeSampleId: c.representative_sample_id,
+      sampleIds: c.sample_ids,
+    })),
+  };
+}
 
 // ------------------------------------------------------------------ helpers
 async function getDatasets(projectId: string): Promise<RsalDataset[]> {
@@ -460,10 +502,42 @@ export async function actionHandler(
     if (action === 'history' && method === 'GET')
       return json(await rsalGet<RsalLabel[]>(`${base}/history`));
 
+    if (action === 'som' && (method === 'GET' || method === 'POST')) {
+      if (method === 'POST') {
+        const body = await request.json().catch(() => ({}));
+        const result = await rsalPost<RsalSomResponse>(`${base}/som`, {
+          ...(body.datasetId && /^\d+$/.test(String(body.datasetId))
+            ? { dataset_id: Number(body.datasetId) }
+            : {}),
+          ...(body.rows ? { rows: Number(body.rows) } : {}),
+          ...(body.cols ? { cols: Number(body.cols) } : {}),
+          ...(body.epochs ? { epochs: Number(body.epochs) } : {}),
+        });
+        return json(toSomData(result));
+      }
+      const url = new URL(request.url);
+      const qs = new URLSearchParams();
+      const did = url.searchParams.get('datasetId');
+      const rows = url.searchParams.get('rows');
+      const cols = url.searchParams.get('cols');
+      const epochs = url.searchParams.get('epochs');
+      if (did && /^\d+$/.test(did)) qs.set('dataset_id', did);
+      if (rows && /^\d+$/.test(rows)) qs.set('rows', rows);
+      if (cols && /^\d+$/.test(cols)) qs.set('cols', cols);
+      if (epochs && /^\d+$/.test(epochs)) qs.set('epochs', epochs);
+      const suffix = qs.toString() ? `?${qs.toString()}` : '';
+      const result = await rsalGet<RsalSomResponse>(`${base}/som${suffix}`);
+      return json(toSomData(result));
+    }
+
     if (action === 'query' && method === 'POST') {
       const body = await request.json();
       const mapped = STRATEGIES[body.strategy ?? 'entropy'];
       if (!mapped) throw new ApiError(`Unknown sampling strategy '${body.strategy}'.`);
+      const somCell =
+        Array.isArray(body.somCell) && body.somCell.length === 2
+          ? [Number(body.somCell[0]), Number(body.somCell[1])]
+          : undefined;
       const [result, datasets] = await Promise.all([
         rsalPost<RsalQueryResponse>(`${base}/query`, {
           strategy: mapped.strategy,
@@ -472,6 +546,10 @@ export async function actionHandler(
           ...(body.datasetId && /^\d+$/.test(String(body.datasetId))
             ? { dataset_id: Number(body.datasetId) }
             : {}),
+          ...(body.somRows ? { som_rows: Number(body.somRows) } : {}),
+          ...(body.somCols ? { som_cols: Number(body.somCols) } : {}),
+          ...(body.somEpochs ? { som_epochs: Number(body.somEpochs) } : {}),
+          ...(somCell ? { som_cell: somCell } : {}),
         }),
         getDatasets(id),
       ]);

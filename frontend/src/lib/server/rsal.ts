@@ -185,3 +185,40 @@ export interface RsalTrainResponse {
   n_samples: number;
   metrics: RsalMetrics;
 }
+export interface RsalSomCell {
+  row: number;
+  col: number;
+  hit_count: number;
+  labeled_count: number;
+  unlabeled_count: number;
+  u_value: number;
+  quantization_error: number;
+  dominant_label: string | null;
+  label_counts: Record<string, number>;
+  predicted_class: string | null;
+  prediction_counts: Record<string, number>;
+  mean_confidence: number | null;
+  mean_uncertainty: number | null;
+  band_means: number[];
+  band_profile: number[];
+  representative_sample_id: string | null;
+  sample_ids: string[];
+}
+export interface RsalSomResponse {
+  project_id: number;
+  dataset_id: number;
+  rows: number;
+  cols: number;
+  epochs: number;
+  total_patches: number;
+  labeled_patches: number;
+  active_neurons: number;
+  quantization_error: number;
+  topographic_error: number;
+  model_iteration: number | null;
+  bands: number;
+  classes: string[];
+  u_matrix: number[][];
+  hit_grid: number[][];
+  cells: RsalSomCell[];
+}

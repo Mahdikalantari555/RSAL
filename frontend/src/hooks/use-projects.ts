@@ -10,6 +10,7 @@ import type {
   LabelInput,
   MapLayer,
   Sample,
+  SomQueryOptions,
   UncertaintyMethod,
 } from '@/types';
 export const keys = {
@@ -23,6 +24,8 @@ export const keys = {
     method: UncertaintyMethod,
     datasetId: string | undefined,
   ) => ['project', id, 'map', layer, method, datasetId ?? 'all'] as const,
+  som: (id: string, datasetId?: string, size?: number) =>
+    ['project', id, 'som', datasetId ?? 'latest', size ?? 'auto'] as const,
 };
 
 /**
@@ -88,6 +91,23 @@ export function useSamples(id: string) {
 export function useMetrics(id: string) {
   return useQuery({ queryKey: keys.metrics(id), queryFn: () => api.metrics(id), enabled: !!id });
 }
+export function useSom(
+  id: string,
+  options?: { datasetId?: string; size?: number; enabled?: boolean },
+) {
+  const datasetId = options?.datasetId;
+  const size = options?.size;
+  return useQuery({
+    queryKey: keys.som(id, datasetId, size),
+    queryFn: () =>
+      api.som(id, {
+        datasetId,
+        rows: size,
+        cols: size,
+      }),
+    enabled: !!id && (options?.enabled ?? true),
+  });
+}
 export function useCreateProject() {
   const client = useQueryClient();
   return useMutation({
@@ -98,17 +118,24 @@ export function useCreateProject() {
 }
 export function useQueryBatch(id: string) {
   const setBatch = useReviewQueue((s) => s.setBatch);
+  const mergeBatch = useReviewQueue((s) => s.mergeBatch);
   return useMutation({
     mutationFn: ({
       batchSize,
       strategy,
       datasetId,
+      options,
     }: {
       batchSize: number;
       strategy: string;
       datasetId?: string;
-    }) => api.query(id, batchSize, strategy, datasetId),
-    onSuccess: (result) => setBatch(id, result.samples),
+      options?: SomQueryOptions;
+      merge?: boolean;
+    }) => api.query(id, batchSize, strategy, datasetId, options),
+    onSuccess: (result, variables) => {
+      if (variables.merge) mergeBatch(id, result.samples);
+      else setBatch(id, result.samples);
+    },
     onError: (e) => toast.error(errorMessage(e)),
   });
 }
