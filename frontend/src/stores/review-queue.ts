@@ -10,6 +10,7 @@ import type { LabelInput, Sample } from '@/types';
 interface ReviewQueueState {
   batches: Record<string, Sample[]>;
   setBatch: (projectId: string, samples: Sample[]) => void;
+  mergeBatch: (projectId: string, samples: Sample[]) => void;
   applyDrafts: (projectId: string, drafts: LabelInput[]) => void;
   revertSample: (projectId: string, sampleId: string) => void;
   clearBatch: (projectId: string) => void;
@@ -20,6 +21,16 @@ export const useReviewQueue = create<ReviewQueueState>()(
       batches: {},
       setBatch: (projectId, samples) =>
         set((s) => ({ batches: { ...s.batches, [projectId]: samples } })),
+      mergeBatch: (projectId, samples) =>
+        set((s) => {
+          const existing = s.batches[projectId] ?? [];
+          const incomingIds = new Set(samples.map((item) => item.id));
+          const combined = [
+            ...samples,
+            ...existing.filter((item) => !incomingIds.has(item.id)),
+          ].map((item, idx) => ({ ...item, batchIndex: idx }));
+          return { batches: { ...s.batches, [projectId]: combined } };
+        }),
       applyDrafts: (projectId, drafts) =>
         set((s) => ({
           batches: {

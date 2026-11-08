@@ -8,7 +8,13 @@ from fastapi import APIRouter, HTTPException
 
 from ..models import Dataset
 from ..schemas import QueryRequest, QueryResponse, QuerySample
-from ..services.al_service import select_hybrid, select_uncertainty, kcenter_greedy, uncertainty_scores
+from ..services.al_service import (
+    kcenter_greedy,
+    select_hybrid,
+    select_som,
+    select_uncertainty,
+    uncertainty_scores,
+)
 from ..services.label_service import build_training_targets
 from ..services.pipeline import checkpoint_or_409
 from ..services.raster_service import (
@@ -100,6 +106,12 @@ async def query_batch(
     )
     labeled_set = set(labeled_sids)
 
+    method_used = (
+        None
+        if payload.strategy == "diversity" or (payload.strategy == "som" and probs is None)
+        else payload.method
+    )
+
     candidate_idx = [
         i for i, sid in enumerate(all_sids)
         if not (payload.exclude_labeled and sid in labeled_set)
@@ -107,7 +119,7 @@ async def query_batch(
     if not candidate_idx:
         return QueryResponse(
             strategy=payload.strategy,
-            method=payload.method if payload.strategy != "diversity" else None,
+            method=method_used,
             batch_size=0,
             model_iteration=run.iteration if run else None,
             samples=[],
@@ -116,22 +128,33 @@ async def query_batch(
     cand = np.asarray(candidate_idx)
     X_c = X[cand]
     scores = uncertainty_scores(probs[cand], payload.method) if probs is not None else None
+    seed_rows = [i for i, sid in enumerate(all_sids) if sid in labeled_set] if labeled_set else []
+    seed_idx = np.asarray(seed_rows, dtype=np.int64) if seed_rows else None
+    seed = X[seed_idx] if seed_idx is not None else None
 
     if payload.strategy == "uncertainty":
         picked = select_uncertainty(scores, payload.batch_size)
     elif payload.strategy == "diversity":
-        seed = None
-        if labeled_set:
-            seed_rows = [i for i, sid in enumerate(all_sids) if sid in labeled_set]
-            if seed_rows:
-                seed = X[np.asarray(seed_rows)]
         picked = kcenter_greedy(X_c, payload.batch_size, seed)
+    elif payload.strategy == "som":
+        try:
+            picked = select_som(
+                X_c,
+                payload.batch_size,
+                seed,
+                scores,
+                rows=payload.som_rows,
+                cols=payload.som_cols,
+                epochs=payload.som_epochs,
+                random_state=settings.random_state,
+                target_cell=payload.som_cell,
+                full_embeddings=X,
+                candidate_indices=cand,
+                seed_indices=seed_idx,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
     else:  # hybrid
-        seed = None
-        if labeled_set:
-            seed_rows = [i for i, sid in enumerate(all_sids) if sid in labeled_set]
-            if seed_rows:
-                seed = X[np.asarray(seed_rows)]
         picked = select_hybrid(scores, X_c, payload.batch_size, payload.hybrid_pool_multiplier, seed)
 
     samples: list[QuerySample] = []
@@ -166,7 +189,7 @@ async def query_batch(
 
     return QueryResponse(
         strategy=payload.strategy,
-        method=payload.method if payload.strategy != "diversity" else None,
+        method=method_used,
         batch_size=len(samples),
         model_iteration=run.iteration if run else None,
         samples=samples,

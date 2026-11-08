@@ -124,7 +124,7 @@ class LabelOut(BaseModel):
 
 # ---------------------------------------------------------------- query
 class QueryRequest(BaseModel):
-    strategy: Literal["uncertainty", "diversity", "hybrid"] = "uncertainty"
+    strategy: Literal["uncertainty", "diversity", "hybrid", "som"] = "uncertainty"
     batch_size: int = Field(default=10, ge=1, le=10000)
     method: Literal["least_confidence", "margin", "entropy"] = "least_confidence"
     dataset_id: int | None = None
@@ -133,6 +133,10 @@ class QueryRequest(BaseModel):
     hybrid_pool_multiplier: int = Field(default=5, ge=1, le=100)
     patch_size: int | None = Field(default=None, ge=2, le=512)
     stride: int | None = Field(default=None, ge=1, le=512)
+    som_rows: int | None = Field(default=None, ge=2, le=32)
+    som_cols: int | None = Field(default=None, ge=2, le=32)
+    som_epochs: int = Field(default=50, ge=5, le=500)
+    som_cell: tuple[int, int] | None = None
 
 
 class QuerySample(BaseModel):
@@ -231,3 +235,54 @@ class ExportOut(BaseModel):
     type: str
     region: dict | None
     created_at: datetime
+
+
+# ---------------------------------------------------------------- self-organizing map
+class SomRequest(BaseModel):
+    dataset_id: int | None = None
+    rows: int | None = Field(default=None, ge=2, le=32)
+    cols: int | None = Field(default=None, ge=2, le=32)
+    epochs: int = Field(default=50, ge=5, le=500)
+    sigma: float | None = Field(default=None, gt=0.0, le=32.0)
+    learning_rate: float = Field(default=0.7, gt=0.0, le=1.0)
+    patch_size: int | None = Field(default=None, ge=2, le=512)
+    stride: int | None = Field(default=None, ge=1, le=512)
+
+
+class SomCell(BaseModel):
+    row: int
+    col: int
+    hit_count: int
+    labeled_count: int
+    unlabeled_count: int
+    u_value: float
+    quantization_error: float
+    dominant_label: str | None = None
+    label_counts: dict[str, int] = Field(default_factory=dict)
+    predicted_class: str | None = None
+    prediction_counts: dict[str, int] = Field(default_factory=dict)
+    mean_confidence: float | None = None
+    mean_uncertainty: float | None = None
+    band_means: list[float]
+    band_profile: list[float]
+    representative_sample_id: str | None = None
+    sample_ids: list[str] = Field(default_factory=list)
+
+
+class SomResponse(BaseModel):
+    project_id: int
+    dataset_id: int
+    rows: int
+    cols: int
+    epochs: int
+    total_patches: int
+    labeled_patches: int
+    active_neurons: int
+    quantization_error: float
+    topographic_error: float
+    model_iteration: int | None = None
+    bands: int
+    classes: list[str]
+    u_matrix: list[list[float]]
+    hit_grid: list[list[int]]
+    cells: list[SomCell]
