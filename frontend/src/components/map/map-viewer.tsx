@@ -28,7 +28,15 @@ import { renderRaster } from '@/lib/geotiff';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dot, EmptyState } from '@/components/ui/common';
-import type { BandMode, Dataset, DrawingTool, Project, Sample, SampleGeometry } from '@/types';
+import type {
+  BandMode,
+  Dataset,
+  DrawingTool,
+  GeorefReason,
+  Project,
+  Sample,
+  SampleGeometry,
+} from '@/types';
 import type { MapAction } from './leaflet-map';
 const LeafletMap = dynamic(() => import('./leaflet-map'), {
   ssr: false,
@@ -39,6 +47,15 @@ const LeafletMap = dynamic(() => import('./leaflet-map'), {
     </div>
   ),
 });
+/**
+ * Why the map is in pixel space. Saying it out loud stops "the imagery is
+ * warped" from being read as "the labels are wrong".
+ */
+const GEOREF_MESSAGES: Record<GeorefReason, string> = {
+  'not-georeferenced': 'no CRS in the file · pixel space',
+  'unsupported-crs': 'CRS not supported for basemap display · pixel space',
+  'non-axis-aligned': 'reprojection is not affine · pixel space',
+};
 const tools: { id: DrawingTool; icon: typeof Hand; title: string }[] = [
   { id: 'pan', icon: Hand, title: 'Pan map' },
   { id: 'point', icon: MapPin, title: 'Draw point (P)' },
@@ -87,11 +104,10 @@ export function MapViewer({
   const command = (kind: MapAction['kind']) => setAction({ kind, nonce: Date.now() });
   const raster = useQuery({
     queryKey: ['raster', dataset?.id, bandMode, customBands],
-    queryFn: async () => {
-      const response = await fetch(dataset.url);
-      if (!response.ok) throw new Error('The raster could not be loaded.');
-      return renderRaster(await response.arrayBuffer(), bandMode, customBands);
-    },
+    // Shares the cached, range-reading handle with the review thumbnails, so
+    // switching band modes does not re-download the scene.
+    queryFn: () =>
+      renderRaster({ url: dataset!.url, datasetId: dataset!.id }, bandMode, customBands),
     enabled: !!dataset,
     staleTime: Infinity,
     retry: 0,
@@ -190,6 +206,7 @@ export function MapViewer({
         {rasterUrl && (
           <LeafletMap
             dataset={dataset}
+            datasetIds={datasets.map((d) => d.id)}
             rasterUrl={rasterUrl}
             project={project}
             samples={samples}
@@ -386,7 +403,14 @@ export function MapViewer({
           </button>
         </div>
         <div className="map-attribution">
-          {dataset.pixelSpace ? 'Pixel space · no basemap' : <>Basemap © Esri · Uploaded imagery</>}
+          {dataset.pixelSpace ? (
+            <>
+              Pixel space · no basemap
+              <span className="georef-reason">{GEOREF_MESSAGES[dataset.georefReason ?? 'not-georeferenced']}</span>
+            </>
+          ) : (
+            <>Basemap © Esri · Uploaded imagery</>
+          )}
         </div>
       </div>
       <div className="class-legend">

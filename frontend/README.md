@@ -14,7 +14,7 @@ and metric is real. There is no demo mode and no frontend database.
 - **Active learning** — query batches with diversity (cold start), entropy,
   margin, least-confidence, or hybrid strategies; review on a Leaflet map
   (WGS84 basemap, or pixel-space view for scenes without a CRS) with real patch
-  outlines and spectral previews.
+  outlines and patch-accurate spectral previews.
 - **Labeling** — keyboard-first review (`1–9` class, `Enter` accept, `S` skip,
   `←/→` navigate, `N` note, `P` point, `?` help), batch grid mode with
   accept-all, point/polygon/rectangle drawing, GeoJSON/CSV import with class
@@ -37,9 +37,25 @@ Browser ── /api/* (Next.js route handlers = BFF adapter) ── RSAL_API_URL
   batch persists in the browser (zustand + localStorage) and is reconciled
   with saved labels from `GET /labels`.
 - `src/lib/geotiff.ts` — renders band combinations in-browser from the
-  original GeoTIFF (2–98% stretch, ≤1200 px).
-- Scenes without a usable CRS fall back to a pixel-space map (Leaflet
-  `CRS.Simple`, no basemap); labels are stored in pixel coordinates.
+  original GeoTIFF (2–98% stretch, ≤1200 px). Reads use HTTP Range requests, so
+  opening a scene costs a few KB and a review thumbnail costs a windowed read of
+  exactly that patch's pixels (`renderPatch`), not a scaled copy of the scene.
+  One parsed handle + stretch per dataset (LRU, 3).
+- `src/lib/geo.ts` — the single pixel↔display transform, shared verbatim by the
+  BFF adapter and the browser. Thumbnails, markers, patch footprints, the warped
+  raster overlay and submitted labels all go through it, so a pixel has one
+  meaning everywhere. It also mirrors the backend patch grid
+  (`gridAxis`/`cellWindow`, including the clamped last row/column).
+- Georeferencing: a north-up UTM scene is drawn on the WGS84 basemap with its
+  basemap tiles; rotated or sheared scenes are **warped** onto the basemap with
+  the same corner fit that places the markers (a plain north-up image overlay
+  would put the imagery up to a few patches away from the labels). Scenes whose
+  reprojection is not affine (no CRS, unsupported CRS, or a fit residual >2% of
+  the scene span) fall back to a pixel-space map (Leaflet `CRS.Simple`, no
+  basemap) with the reason stated in the map attribution; labels are then stored
+  in pixel coordinates.
+- Map layers are scoped to the active dataset: samples and drafts belonging to
+  another scene are never drawn on top of the current one.
 
 ## Run locally
 
@@ -56,6 +72,8 @@ cd frontend
 npm install
 cp .env.example .env.local        # optional; defaults to http://localhost:8000
 npm run dev                       # http://localhost:3000
+npm test                          # geo transform unit tests (node:test)
+npm run typecheck && npm run lint
 ```
 
 Production: `npm run build && npm start`. Quality gates: `npm run typecheck`,

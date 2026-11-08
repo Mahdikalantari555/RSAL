@@ -1824,9 +1824,56 @@ kbd {
   border-radius: 5px;
   position: relative;
   background-color: #3f5031;
-  background-size: 310%;
+  /* The image is the patch itself (windowed GeoTIFF read), so it fills the box
+     exactly. No background-size/background-position maths: those can never
+     agree with the map, which is what this replaced. */
+  background-size: 100% 100%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
   overflow: hidden;
   isolation: isolate;
+}
+.sample-patch-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.patch-caption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.patch-caption > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.patch-context {
+  flex-shrink: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 2px 6px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+.patch-context:hover {
+  color: var(--text);
+  border-color: var(--text-secondary);
+}
+.patch-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #eae4cf;
 }
 .sample-patch:after {
   content: '';
@@ -1837,14 +1884,26 @@ kbd {
 }
 .patch-crosshair {
   position: absolute;
-  left: 50%;
-  top: 45%;
-  width: 40px;
-  height: 36px;
+  /* Inset border = the patch edge itself, so the crop boundary is visible. */
+  inset: 0;
+  border-radius: 4px;
+  width: auto;
+  height: auto;
+  left: 0;
+  top: 0;
   border: 1px dashed #f5e0a3;
-  transform: translate(-50%, -50%);
   background: #f5df9b09;
   box-shadow: 0 0 0 1px #f5e0a325;
+  pointer-events: none;
+}
+.georef-reason {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #7a5c1f38;
+  color: #f0dfae;
+  font-size: 9px;
+  letter-spacing: 0.04em;
 }
 .patch-crosshair:before,
 .patch-crosshair:after {
@@ -4998,7 +5057,6 @@ kbd {
   }
   .sample-patch {
     height: 130px;
-    background-size: 190%;
   }
   .patch-coordinate {
     font-size: 9px;
@@ -5006,8 +5064,7 @@ kbd {
     left: 10px;
   }
   .patch-crosshair {
-    height: 50px;
-    width: 55px;
+    border-width: 2px;
   }
   .prediction-row {
     padding: 15px 0 13px;

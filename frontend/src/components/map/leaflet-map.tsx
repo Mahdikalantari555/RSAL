@@ -15,10 +15,12 @@ import {
 } from 'react-leaflet';
 import L, { type LatLng, type LatLngBoundsExpression, type LatLngExpression } from 'leaflet';
 import { useWorkspace } from '@/stores/workspace';
+import { datasetGeoContext, overlayTransform } from '@/lib/geo';
 import type { Bounds, Dataset, Project, Sample, SampleGeometry } from '@/types';
 export type MapAction = { kind: 'in' | 'out' | 'fit' | 'focus' | 'undo'; nonce: number };
 interface Props {
   dataset: Dataset;
+  datasetIds: string[];
   rasterUrl: string;
   project: Project;
   samples: Sample[];
@@ -66,7 +68,7 @@ function Controller({
             [selected.bbox[1], selected.bbox[0]],
             [selected.bbox[3], selected.bbox[2]],
           ],
-          { padding: [80, 80], maxZoom: dataset.pixelSpace ? 6 : 17, duration: 0.6 },
+          { padding: [80, 80], maxZoom: dataset.pixelSpace ? 6 : 19, duration: 0.6 },
         );
       else
         map.flyTo([selected.lat, selected.lng], Math.max(map.getZoom(), dataset.pixelSpace ? 2 : 14), {
@@ -80,6 +82,75 @@ function Controller({
   }, [selected?.id]);
   return null;
 }
+/**
+ * The raster, painted through the same corner fit that positions every marker.
+ *
+ * For a north-up scene the fit is a plain scale, so this is equivalent to a
+ * stretched image. For anything else (zone convergence, rotated transforms) the
+ * image is warped sheared in the canvas instead of being fitted into an
+ * axis-aligned rectangle that would put the imagery up to a few patches away
+ * from the labels drawn on top of it.
+ */
+function RasterOverlay({
+  dataset,
+  rasterUrl,
+  opacity,
+}: {
+  dataset: Dataset;
+  rasterUrl: string;
+  opacity: number;
+}) {
+  const ctx = useMemo(() => datasetGeoContext(dataset), [dataset]);
+  // No fit => the PNG is already in the display frame (pixel space).
+  const matrix = useMemo(() => overlayTransform(ctx, 1, 1), [ctx]);
+  const [warped, setWarped] = useState<{ key: string; url: string } | null>(null);
+  const key = `${dataset.id}:${rasterUrl.length}:${rasterUrl.slice(-24)}`;
+
+  useEffect(() => {
+    if (!matrix) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(rasterUrl);
+        if (!response.ok) throw new Error('Raster unavailable');
+        const bitmap = await createImageBitmap(await response.blob());
+        const width = 1600;
+        const height = Math.max(1, Math.round((1600 * dataset.height) / dataset.width));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const context = canvas.getContext('2d');
+        if (!context) throw new Error('Canvas unavailable');
+        context.imageSmoothingQuality = 'high';
+        // Paint the source pixels through the corner fit, so the image and the
+        // markers (placed with the same fit) stay aligned at every zoom.
+        context.setTransform(
+          matrix[0] * width,
+          matrix[3] * height,
+          matrix[1] * width,
+          matrix[4] * height,
+          matrix[2] * width,
+          matrix[5] * height,
+        );
+        context.drawImage(bitmap, 0, 0, dataset.width, dataset.height);
+        bitmap.close?.();
+        if (!cancelled) setWarped({ key, url: canvas.toDataURL('image/png') });
+      } catch {
+        if (!cancelled) setWarped({ key, url: rasterUrl });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [matrix, rasterUrl, key, dataset.width, dataset.height]);
+
+  const source = !matrix ? rasterUrl : warped?.key === key ? warped.url : null;
+  if (!source) return null;
+  return (
+    <ImageOverlay url={source} bounds={asLeaflet(dataset.bounds)} opacity={opacity / 100} />
+  );
+}
+
 function DrawControls({ onDraw, action }: { onDraw: Props['onDraw']; action: MapAction | null }) {
   const { tool, setTool, activeClass } = useWorkspace();
   const [points, setPoints] = useState<LatLng[]>([]);
@@ -198,6 +269,7 @@ function DrawControls({ onDraw, action }: { onDraw: Props['onDraw']; action: Map
 }
 export default function LeafletMap({
   dataset,
+  datasetIds,
   rasterUrl,
   project,
   samples,
@@ -236,7 +308,19 @@ export default function LeafletMap({
       );
     return merged;
   }, [samples, drafts, project]);
-  const selected = allSamples.find((s) => s.id === selectedSampleId);
+
+  // Only draw what belongs to the dataset on screen. Samples of other scenes
+  // carry coordinates from a different CRS/extent and would land on the wrong
+  // ground — which is exactly the "point doesn't match the imagery" report.
+  const visibleSamples = useMemo(
+    () =>
+      allSamples.filter(
+        (s) => !s.datasetId || s.datasetId === dataset.id || datasetIds.length <= 1,
+      ),
+    [allSamples, dataset.id, datasetIds],
+  );
+  const selected = visibleSamples.find((s) => s.id === selectedSampleId);
+  const [hovered, setHovered] = useState<string | null>(null);
   const bounds = dataset.bounds;
   return (
     <MapContainer
@@ -258,17 +342,16 @@ export default function LeafletMap({
           maxZoom={19}
         />
       )}
-      <ImageOverlay
-        key={`${dataset.id}-${rasterUrl.slice(-30)}`}
-        url={rasterUrl}
-        bounds={asLeaflet(bounds)}
-        opacity={opacity / 100}
+      <RasterOverlay
+        dataset={dataset}
+        rasterUrl={rasterUrl}
+        opacity={opacity}
       />
       <Controller dataset={dataset} action={action} selected={selected} />
       <DrawControls onDraw={onDraw} action={action} />
-      {allSamples
+      {visibleSamples
         .filter((s) => (s.status === 'pending' ? showSuggestions : showLabels))
-        .map((sample, i) => {
+        .map((sample) => {
           const isSelected = sample.id === selectedSampleId;
           const color =
             project.classes.find((c) => c.id === (sample.label ?? sample.prediction))?.color ??
@@ -294,17 +377,19 @@ export default function LeafletMap({
                   eventHandlers={{ click: () => selectSample(sample.id) }}
                 />
               )}
-              {isSelected && sample.bbox && (
+              {/* The patch footprint: the same window the thumbnail crops, so
+                  the two are directly comparable at any zoom. */}
+              {sample.bbox && (isSelected || hovered === sample.id) && (
                 <Rectangle
                   bounds={[
                     [sample.bbox[1], sample.bbox[0]],
                     [sample.bbox[3], sample.bbox[2]],
                   ]}
                   pathOptions={{
-                    color: '#f3e8a0',
-                    weight: 1.5,
-                    fillColor: '#e8d277',
-                    fillOpacity: 0.13,
+                    color: isSelected ? '#f3e8a0' : '#ffffff',
+                    weight: isSelected ? 1.5 : 1,
+                    fillColor: isSelected ? '#e8d277' : '#ffffff',
+                    fillOpacity: isSelected ? 0.13 : 0.05,
                     dashArray: '5 4',
                   }}
                 />
@@ -313,7 +398,11 @@ export default function LeafletMap({
                 position={[sample.lat, sample.lng]}
                 icon={marker}
                 zIndexOffset={isSelected ? 100 : 0}
-                eventHandlers={{ click: () => selectSample(sample.id) }}
+                eventHandlers={{
+                  click: () => selectSample(sample.id),
+                  mouseover: () => setHovered(sample.id),
+                  mouseout: () => setHovered((current) => (current === sample.id ? null : current)),
+                }}
               >
                 <Tooltip direction="top" offset={[0, -15]}>
                   {project.classes.find((c) => c.id === (sample.label ?? sample.prediction))?.name}{' '}

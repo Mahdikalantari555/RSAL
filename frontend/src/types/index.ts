@@ -19,6 +19,15 @@ export interface Project {
   modelVersion: string;
 }
 export type Bounds = [number, number, number, number];
+export interface PixelWindow {
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+}
+export type GeorefMode = 'map' | 'pixel';
+export type GeorefReason = 'not-georeferenced' | 'unsupported-crs' | 'non-axis-aligned';
+
 export interface Dataset {
   id: string;
   projectId: string;
@@ -29,10 +38,16 @@ export interface Dataset {
   height: number;
   resolution: string;
   crs: string;
+  /** GDAL-style affine [a, b, c, d, e, f], when the file has one. */
+  transform: number[] | null;
   /** WGS84 [w, s, e, n]; for pixel-space scenes [0, 0, width, height]. */
   bounds: Bounds;
   /** True when the scene has no usable CRS: displayed with Leaflet CRS.Simple. */
   pixelSpace: boolean;
+  /** Why the dataset is (or is not) shown on the WGS84 basemap. */
+  georefReason: GeorefReason | null;
+  /** Patch grid the backend uses for this dataset, when known. */
+  patchGrid: { patchSize: number; stride: number; rows: number; cols: number } | null;
   url: string;
   previewUrl: string | null;
   createdAt: string;
@@ -58,7 +73,9 @@ export interface Sample {
   geometry: SampleGeometry | null;
   source: 'query' | 'manual' | 'import';
   datasetId?: string;
-  /** True pixel center in the source raster, when known. */
+  /** Pixel window of this sample's patch in the source raster, when known. */
+  window?: PixelWindow;
+  /** Top-left pixel of the patch (the point a label is attached to). */
   pixel?: { x: number; y: number };
   /** Display-space patch rectangle [w, s, e, n]. */
   bbox?: Bounds;
@@ -67,13 +84,14 @@ export interface Sample {
 }
 export interface LabelInput {
   sampleId: string;
+  /** Dataset the sample belongs to; drafts drawn on a scene keep it forever. */
+  datasetId?: string;
   label: string | null;
   status: 'labeled' | 'skipped';
   note: string;
   lat?: number;
   lng?: number;
   geometry?: SampleGeometry | null;
-  datasetId?: string;
   pixel?: { x: number; y: number };
 }
 export interface Iteration {

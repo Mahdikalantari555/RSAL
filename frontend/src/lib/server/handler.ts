@@ -28,10 +28,13 @@ import {
   type RsalTrainResponse,
 } from './rsal';
 import {
+  applyAffine,
+  assessGeoreferencing,
   datasetBounds,
-  fromWgs84,
-  invertAffine,
+  displayToPixel,
+  geoContext,
   isGeoreferenced,
+  labelPixelWindow,
   labelToDisplay,
   pixelRectToDisplay,
   pixelToDisplay,
@@ -60,6 +63,7 @@ function toIteration(m: RsalMetrics, previousSamples: number): Iteration {
 
 function toDataset(d: RsalDataset): Dataset {
   const geoBounds = datasetBounds(d);
+  const georef = assessGeoreferencing(geoContext(d));
   const res = d.transform
     ? `${Math.abs(d.transform[0]).toLocaleString('en', { maximumFractionDigits: 6 })} ${
         d.crs === 'EPSG:4326' ? '°' : 'm'
@@ -75,8 +79,18 @@ function toDataset(d: RsalDataset): Dataset {
     height: d.height,
     resolution: res,
     crs: d.crs ?? 'Not georeferenced',
+    transform: d.transform,
     bounds: geoBounds ?? [0, 0, d.width, d.height],
-    pixelSpace: !geoBounds,
+    pixelSpace: georef.mode === 'pixel',
+    georefReason: georef.reason,
+    patchGrid: d.patch_grid
+      ? {
+          patchSize: d.patch_grid.patch_size,
+          stride: d.patch_grid.stride,
+          rows: d.patch_grid.rows,
+          cols: d.patch_grid.cols,
+        }
+      : null,
     url: `/api/projects/${d.project_id}/dataset/${d.id}/file`,
     previewUrl: null,
     createdAt: d.created_at,
@@ -135,13 +149,19 @@ function savedLabelToSample(
   const dataset = datasets.find((d) => d.id === label.dataset_id);
   const display = labelToDisplay(dataset, label.geometry, label.coordinate_space);
   if (!display) return null;
+  // Every saved label gets the pixel window of its patch, so a reloaded label
+  // lines up with the same thumbnail and footprint a fresh query sample has.
+  let window: Sample['window'];
   let pixel: Sample['pixel'];
-  if (label.geometry.type === 'Point') {
-    const [x, y] = (label.geometry.coordinates as number[]).map(Number);
-    if (label.coordinate_space === 'pixel') pixel = { x, y };
-    else if (dataset?.transform) {
-      const [col, row] = invertAffine(dataset.transform, x, y);
-      pixel = { x: col, y: row };
+  if (dataset) {
+    const grid = {
+      patchSize: dataset.patch_grid?.patch_size ?? 32,
+      stride: dataset.patch_grid?.stride ?? dataset.patch_grid?.patch_size ?? 32,
+    };
+    const derived = labelPixelWindow(dataset, label.geometry, label.coordinate_space, grid);
+    if (derived) {
+      window = derived;
+      pixel = { x: derived.x0, y: derived.y0 };
     }
   }
   return {
@@ -160,7 +180,9 @@ function savedLabelToSample(
     geometry: display.geometry.type === 'Polygon' ? display.geometry : null,
     source: 'import', // saved labels stay out of the active review queue
     datasetId: label.dataset_id != null ? String(label.dataset_id) : undefined,
+    window,
     pixel,
+    bbox: dataset && window ? pixelRectToDisplay(geoContext(dataset), window) : undefined,
     saved: true,
   };
 }
@@ -207,16 +229,19 @@ function toRsalLabel(
       : null);
   if (!geometry) throw new ApiError('Every label needs a location.');
 
+  // Display -> pixel goes through the shared transform, so submission cannot
+  // disagree with where the marker and the thumbnail were drawn.
+  const ctx = geoContext(dataset);
+  const georeferenced = isGeoreferenced(dataset);
   const convertPair = (lng: number, lat: number): [number, number] => {
-    if (!isGeoreferenced(dataset)) {
-      // CRS.Simple display space: lng = x, lat = height - y.
-      return [lng, dataset.height - lat];
-    }
-    const map = fromWgs84(dataset, lng, lat);
-    if (!map) throw new ApiError('Could not reproject this label into the dataset CRS.', 422);
-    return map;
+    const pixel = displayToPixel(ctx, lng, lat);
+    if (!Number.isFinite(pixel.x) || !Number.isFinite(pixel.y))
+      throw new ApiError('Could not reproject this label into the dataset CRS.', 422);
+    if (!georeferenced) return [pixel.x, pixel.y];
+    const [x, y] = applyAffine(dataset.transform!, pixel.x, pixel.y);
+    return [x, y];
   };
-  payload.coordinate_space = isGeoreferenced(dataset) ? 'map' : 'pixel';
+  payload.coordinate_space = georeferenced ? 'map' : 'pixel';
   if (geometry.type === 'Point') {
     const [lng, lat] = geometry.coordinates as number[];
     payload.geometry = { type: 'Point', coordinates: convertPair(lng, lat) };
@@ -342,25 +367,31 @@ export async function datasetItemHandler(
 }
 
 export async function datasetFileHandler(
-  _request: NextRequest,
+  request: NextRequest,
   context: Context,
 ): Promise<NextResponse> {
   return handle(async () => {
     const { id = '', itemId = '' } = await context.params;
+    // Forward byte ranges so the browser can read a 32 px patch out of a large
+    // GeoTIFF instead of downloading the whole scene for one thumbnail.
+    const range = request.headers.get('range');
     const response = await rsalFetch(
       `/projects/${pid(id)}/dataset/${encodeURIComponent(itemId)}/file`,
+      range ? { headers: { range } } : undefined,
     );
-    if (!response.ok) {
+    if (!response.ok && response.status !== 206) {
       const data = await response.json().catch(() => null);
       throw new ApiError(data?.detail ?? 'The raster file could not be loaded.', response.status);
     }
-    return new NextResponse(response.body, {
-      headers: {
-        'content-type': response.headers.get('content-type') ?? 'image/tiff',
-        'cache-control': 'private, max-age=3600',
-        'x-content-type-options': 'nosniff',
-      },
-    });
+    const headers: Record<string, string> = {
+      'content-type': response.headers.get('content-type') ?? 'image/tiff',
+      'cache-control': 'private, max-age=3600',
+      'x-content-type-options': 'nosniff',
+      'accept-ranges': 'bytes',
+    };
+    const contentRange = response.headers.get('content-range');
+    if (contentRange) headers['content-range'] = contentRange;
+    return new NextResponse(response.body, { status: response.status, headers });
   });
 }
 
@@ -443,11 +474,13 @@ export async function actionHandler(
       const samples: Sample[] = result.samples.map((s, index) => {
         const dataset = datasets.find((d) => d.id === s.dataset_id);
         const display = dataset
-          ? pixelToDisplay(dataset, s.coords.center_x, s.coords.center_y)
+          ? pixelToDisplay(geoContext(dataset), s.coords.center_x, s.coords.center_y)
           : { lng: s.coords.center_x, lat: s.coords.center_y };
-        const bbox: Bounds | undefined = dataset
-          ? pixelRectToDisplay(dataset, s.coords.x0, s.coords.y0, s.coords.x1, s.coords.y1)
+        const window = dataset
+          ? { x0: s.coords.x0, y0: s.coords.y0, x1: s.coords.x1, y1: s.coords.y1 }
           : undefined;
+        const bbox: Bounds | undefined =
+          dataset && window ? pixelRectToDisplay(geoContext(dataset), window) : undefined;
         return {
           id: s.sample_id,
           projectId: id,
@@ -464,7 +497,10 @@ export async function actionHandler(
           geometry: null,
           source: 'query',
           datasetId: String(s.dataset_id),
-          pixel: { x: s.coords.center_x, y: s.coords.center_y },
+          // Labels are attached to the patch origin, which is what the backend's
+          // `d{dataset}_r{row}_c{col}` id means; the centre is display only.
+          pixel: window ? { x: window.x0, y: window.y0 } : undefined,
+          window,
           bbox,
         };
       });
