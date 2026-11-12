@@ -56,6 +56,11 @@ Browser ── /api/* (Next.js route handlers = BFF adapter) ── RSAL_API_URL
   in pixel coordinates.
 - Map layers are scoped to the active dataset: samples and drafts belonging to
   another scene are never drawn on top of the current one.
+- A saved label reloads exactly where its query sample was drawn: the pin is the
+  patch *centre* (not the clicked point or the patch origin), and the footprint
+  is recovered from the stored geometry in whichever space RSAL kept it
+  (`map` = projected CRS, or `pixel`). `patchWindowForLabel` in `lib/geo.ts` is
+  the one implementation, unit-tested for both spaces.
 
 ### Model layers
 
@@ -87,7 +92,9 @@ Exports download the field you are looking at: GeoTIFF (with colormap, `grid`
 and `method` tags), PNG (the same picture, invalid cells transparent) or CSV
 (one row per cell with class, probability, uncertainty and pixel windows). The
 layers panel links them per layer; the analytics view has a **Maps** card
-listing every export with its iteration and staleness.
+listing every export with its iteration and staleness. Submitting labels or
+training invalidates the cached fields, so a visible layer switches to the new
+model's output immediately instead of showing the previous run's colours.
 
 ## Run locally
 

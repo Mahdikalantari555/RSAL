@@ -157,6 +157,7 @@ function savedLabelToSample(
   // lines up with the same thumbnail and footprint a fresh query sample has.
   let window: Sample['window'];
   let pixel: Sample['pixel'];
+  let pin: { lat: number; lng: number } = { lat: display.lat, lng: display.lng };
   if (dataset) {
     const grid = {
       patchSize: dataset.patch_grid?.patch_size ?? 32,
@@ -166,13 +167,22 @@ function savedLabelToSample(
     if (derived) {
       window = derived;
       pixel = { x: derived.x0, y: derived.y0 };
+      // A fresh query sample is drawn at its patch centre; a saved label must
+      // reload exactly there, not at the clicked point (up to half a patch off).
+      // Polygons keep their clicked centroid; their ring is drawn anyway.
+      if (label.geometry.type === 'Point')
+        pin = pixelToDisplay(
+          geoContext(dataset),
+          (derived.x0 + derived.x1) / 2,
+          (derived.y0 + derived.y1) / 2,
+        );
     }
   }
   return {
     id: label.sample_id,
     projectId,
-    lat: display.lat,
-    lng: display.lng,
+    lat: pin.lat,
+    lng: pin.lng,
     prediction: label.class_name,
     confidence: 1,
     uncertainty: 0,

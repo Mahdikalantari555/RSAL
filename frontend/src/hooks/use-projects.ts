@@ -174,6 +174,7 @@ export function useSaveLabels(id: string) {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['project', id] }),
         client.invalidateQueries({ queryKey: keys.projects }),
+        client.invalidateQueries({ queryKey: ['project', id, 'map'] }),
       ]);
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -189,6 +190,7 @@ export function useDeleteLabel(id: string) {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['project', id] }),
         client.invalidateQueries({ queryKey: keys.projects }),
+        client.invalidateQueries({ queryKey: ['project', id, 'map'] }),
       ]);
     },
     onError: (e) => toast.error(errorMessage(e)),
@@ -202,6 +204,10 @@ export function useTrain(id: string) {
       await Promise.all([
         client.invalidateQueries({ queryKey: ['project', id] }),
         client.invalidateQueries({ queryKey: keys.projects }),
+        // Classification/uncertainty fields are keyed by dataset+layer+method,
+        // not by iteration, so without this a visible layer keeps painting the
+        // *previous* model's output after training (and still calls it fresh).
+        client.invalidateQueries({ queryKey: ['project', id, 'map'] }),
       ]);
     },
     onError: (e) => toast.error(errorMessage(e)),

@@ -9,6 +9,7 @@ import {
   gridAxis,
   invertAffine,
   overlayTransform,
+  patchWindowForLabel,
   pixelRectToDisplay,
   pixelToDisplay,
   pointToCell,
@@ -184,4 +185,81 @@ test('dataset context ignores the placeholder CRS label', () => {
     height: 10,
   });
   assert.equal(ctx.crsCode, null);
+});
+
+test('a saved label snaps to the patch it was clicked in, in either coordinate space', () => {
+  const grid = { patchSize: 32, stride: 32 };
+  // Regression: RSAL stores points as `map` (projected) or `pixel`. Recovering
+  // the footprint from a map point used to treat it as WGS84, snapping to the
+  // wrong patch and moving the reloaded marker.
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      const cell = cellWindow(utm, grid, row, col);
+      const centreX = (cell.x0 + cell.x1) / 2;
+      const centreY = (cell.y0 + cell.y1) / 2;
+      const [mapX, mapY] = applyAffine(utm.transform!, centreX, centreY);
+      assert.deepEqual(
+        patchWindowForLabel(
+          utm,
+          grid,
+          { type: 'Point', coordinates: [centreX, centreY] },
+          'pixel',
+        ),
+        cell,
+      );
+      assert.deepEqual(
+        patchWindowForLabel(utm, grid, { type: 'Point', coordinates: [mapX, mapY] }, 'map'),
+        cell,
+      );
+      assert.deepEqual(pointToCell(utm, grid, centreX, centreY), { row, col });
+    }
+  }
+});
+
+test('a saved pin sits at the patch centre, where the query sample was drawn', () => {
+  const grid = { patchSize: 32, stride: 32 };
+  const cell = cellWindow(utm, grid, 1, 2);
+  const centre = pixelToDisplay(utm, (cell.x0 + cell.x1) / 2, (cell.y0 + cell.y1) / 2);
+  // A label clicked near the cell's south-east corner must still reload at the
+  // centre, not at the click and not at the patch origin.
+  const [mapX, mapY] = applyAffine(utm.transform!, cell.x1 - 1, cell.y1 - 1);
+  const window = patchWindowForLabel(utm, grid, { type: 'Point', coordinates: [mapX, mapY] }, 'map');
+  assert.deepEqual(window, cell);
+  const pin = pixelToDisplay(utm, (window!.x0 + window!.x1) / 2, (window!.y0 + window!.y1) / 2);
+  assert.ok(Math.abs(pin.lat - centre.lat) < 1e-12 && Math.abs(pin.lng - centre.lng) < 1e-12);
+  // ...and the click itself is visibly elsewhere in the cell, i.e. the snap matters.
+  const clicked = pixelToDisplay(utm, cell.x1 - 1, cell.y1 - 1);
+  assert.ok(Math.abs(clicked.lat - centre.lat) > 1e-6 || Math.abs(clicked.lng - centre.lng) > 1e-6);
+});
+
+test('polygons keep their extent; degenerate geometry returns null', () => {
+  const grid = { patchSize: 32, stride: 32 };
+  const [cx, cy] = applyAffine(utm.transform!, 3, 3);
+  const [ex, ey] = applyAffine(utm.transform!, 9, 7);
+  assert.deepEqual(
+    patchWindowForLabel(
+      utm,
+      grid,
+      {
+        type: 'Polygon',
+        coordinates: [
+          [
+            [cx, cy],
+            [ex, cy],
+            [ex, ey],
+            [cx, ey],
+            [cx, cy],
+          ],
+        ],
+      },
+      'map',
+    ),
+    { x0: 3, y0: 3, x1: 9, y1: 7 },
+  );
+  assert.equal(patchWindowForLabel(utm, grid, { type: 'Point', coordinates: [] }, 'map'), null);
+  assert.equal(
+    patchWindowForLabel(utm, grid, { type: 'Point', coordinates: [Number.NaN, 4] }, 'map'),
+    null,
+  );
+  assert.equal(patchWindowForLabel(utm, grid, { type: 'Polygon', coordinates: [] }, 'pixel'), null);
 });

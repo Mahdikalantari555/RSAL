@@ -32,4 +32,13 @@
 - [x] 5.2 Checked thumbnail vs map footprint at grid corners and centre (north-up UTM) against live backend data; pixel-space path unit-tested
 - [x] 5.3 Live smoke: upload → query → label → reload; `/labels` returns windows whose pixel windows match the query contract
 - [x] 5.4 Updated `frontend/README.md` with the transform module, range-read thumbnail path and georeferencing rules
-- [ ] 5.5 Reviewer sign-off on visual alignment (live preview)
+- [x] 5.5 Saved-label reload parity: a submitted label reloads as the same
+      `window`/`polygon`/display pin as the query sample it came from. Fixed two
+      defects found by the adapter smoke: `map`-space labels were inverted as if
+      they were WGS84 (wrong patch, up to half a patch away), and point pins were
+      re-drawn at the clicked/patch-origin point instead of the patch centre the
+      query sample is drawn at. `npm test` 21 passing (3 new); adapter smoke now
+      69/69 (the `pixel label round-trips display` check had been failing).
+- [~] 5.6 Reviewer sign-off on visual alignment (live preview). Automated
+      alignment is covered end-to-end; a human look at a representative scene is
+      still the last word, and browsers cannot be driven in this sandbox.
