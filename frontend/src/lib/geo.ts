@@ -289,6 +289,48 @@ export function displayToPixel(
   return { x: lng, y: ctx.height - lat };
 }
 
+/**
+ * Patch a stored label is attached to, as a pixel window in the source raster.
+ *
+ * Labels are stored at the point the user clicked, but the training sample is
+ * the whole patch and RSAL derives the sample id from that patch. The map draws
+ * a query sample at the *centre* of its patch, so recovering the window from the
+ * raw clicked point (rather than snapping it to the patch) would move the marker
+ * up to half a patch the moment the label is reloaded. Snapping here keeps the
+ * saved pin exactly where the suggestion was drawn.
+ */
+export function patchWindowForLabel(
+  ctx: GeoContext,
+  grid: { patchSize: number; stride: number },
+  geometry: { type: string; coordinates: unknown },
+  space: string,
+): { x0: number; y0: number; x1: number; y1: number } | null {
+  // `map` -> projected CRS; `pixel` -> raster pixels (RSAL stores both).
+  const toPixel = (pair: number[]): { x: number; y: number } => {
+    if (space === 'pixel') return { x: Number(pair[0]), y: Number(pair[1]) };
+    const [col, row] = invertAffine(ctx.transform!, Number(pair[0]), Number(pair[1]));
+    return { x: col, y: row };
+  };
+  if (geometry.type === 'Point') {
+    const point = toPixel(geometry.coordinates as number[]);
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+    const cell = pointToCell(ctx, grid, point.x, point.y);
+    return cellWindow(ctx, grid, cell.row, cell.col);
+  }
+  if (geometry.type === 'Polygon') {
+    const ring = (geometry.coordinates as number[][][])[0] ?? [];
+    const points = ring.map(toPixel).filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+    if (!points.length) return null;
+    return {
+      x0: Math.min(...points.map((p) => p.x)),
+      y0: Math.min(...points.map((p) => p.y)),
+      x1: Math.max(...points.map((p) => p.x)),
+      y1: Math.max(...points.map((p) => p.y)),
+    };
+  }
+  return null;
+}
+
 /** Display-space rectangle [w, s, e, n] for a pixel rectangle. */
 export function pixelRectToDisplay(
   ctx: GeoContext,

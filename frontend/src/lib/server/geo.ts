@@ -9,10 +9,10 @@ import type { Bounds, SampleGeometry } from '@/types';
 import {
   applyAffine,
   assessGeoreferencing,
-  cellWindow,
   displayToPixel,
   fromWgs84,
   invertAffine,
+  patchWindowForLabel,
   pixelRectToDisplay,
   pixelToDisplay,
   pointToCell,
@@ -25,13 +25,12 @@ import type { RsalDataset } from './rsal';
 export {
   applyAffine,
   assessGeoreferencing,
-  cellWindow,
   displayToPixel,
   fromWgs84,
   invertAffine,
+  patchWindowForLabel,
   pixelRectToDisplay,
   pixelToDisplay,
-  pointToCell,
   projectionDef,
   toWgs84,
 };
@@ -120,26 +119,5 @@ export function labelPixelWindow(
   space: string,
   grid: { patchSize: number; stride: number },
 ): { x0: number; y0: number; x1: number; y1: number } | null {
-  const ctx = geoContext(dataset);
-  const toPixel = (pair: number[]): { x: number; y: number } => {
-    if (space === 'pixel') return { x: Number(pair[0]), y: Number(pair[1]) };
-    return displayToPixel(ctx, Number(pair[0]), Number(pair[1]));
-  };
-  if (geometry.type === 'Point') {
-    const point = toPixel(geometry.coordinates as number[]);
-    const cell = pointToCell(ctx, grid, point.x, point.y);
-    return cellWindow(ctx, grid, cell.row, cell.col);
-  }
-  if (geometry.type === 'Polygon') {
-    const ring = (geometry.coordinates as number[][][])[0] ?? [];
-    const points = ring.map(toPixel);
-    if (!points.length) return null;
-    return {
-      x0: Math.min(...points.map((p) => p.x)),
-      y0: Math.min(...points.map((p) => p.y)),
-      x1: Math.max(...points.map((p) => p.x)),
-      y1: Math.max(...points.map((p) => p.y)),
-    };
-  }
-  return null;
+  return patchWindowForLabel(geoContext(dataset), grid, geometry, space);
 }
