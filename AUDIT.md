@@ -13,7 +13,7 @@
 ## Data-flow findings and pipeline distinctions
 - Supervised legacy patch path: label geometry -> patch ID -> per-band mean/std/min/max -> RF/LightGBM -> one prediction per patch cell -> legacy patch-lattice exports.
 - Supervised pixel path: point/polygon labels -> pixel indices -> raw band values -> RF/LightGBM -> one prediction per source pixel -> source-grid GeoTIFFs.
-- Active-learning queries and SOM explorer remain patch-oriented. Unsupervised SOM classification is a separate route: it supports pixel (default) or patch values and now uses patch validity rather than classifying all-NoData patches.
+- Active-learning queries and SOM explorer remain patch-oriented. Unsupervised SOM classification is a separate route: it supports pixel (default) or patch values, validates pixel output against the reference window, and uses patch validity rather than classifying all-NoData patches.
 - No observed endpoint default was silently shifted: patch supervised training remains the default. `resolution=pixel` is explicit.
 
 ## Remaining limitations / review notes
