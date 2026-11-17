@@ -31,6 +31,7 @@ from ..services.raster_service import (
     patch_features,
     patch_validity,
     sample_id,
+    validate_grid_compatibility,
 )
 from ..services.som_service import (
     UnsupervisedSomResult,
@@ -320,6 +321,11 @@ async def run_som_classification(
             dataset.crs,
             transform,
         )
+        if payload.resolution == "pixel":
+            import rasterio
+            window = (region.x0, region.y0, region.x1 - region.x0, region.y1 - region.y0)
+            with rasterio.open(dataset.path) as reference, rasterio.open(som_path) as output:
+                validate_grid_compatibility(reference, output, window=window)
         return result
 
     try:
