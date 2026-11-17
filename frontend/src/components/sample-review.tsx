@@ -82,13 +82,12 @@ function SamplePatch({
     <div className="sample-patch-wrap">
       <button
         className="sample-patch"
-        style={{
-          backgroundImage: preview.data ? `url("${preview.data}")` : undefined,
-          imageRendering: 'pixelated',
-        }}
         onClick={onClick}
         aria-label="Locate this sample on the map"
       >
+        {preview.data && (
+          <img className="sample-patch-image" src={preview.data} alt="" aria-hidden="true" />
+        )}
         {!preview.data && (
           <span className="patch-loading">
             <LoaderCircle size={14} className="spin" />

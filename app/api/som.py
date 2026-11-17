@@ -29,6 +29,7 @@ from ..services.raster_service import (
     load_raster,
     make_grid,
     patch_features,
+    patch_validity,
     sample_id,
 )
 from ..services.som_service import (
@@ -292,7 +293,7 @@ async def run_som_classification(
         else:
             grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
             flat = patch_features(crop, grid)
-            valid_mask = np.ones(len(flat), dtype=bool)
+            valid_mask = patch_validity(crop, grid)
             out_shape = grid.shape
             transform = grid_transform(dataset.transform, grid, region.x0, region.y0, stride)
 

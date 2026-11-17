@@ -10,6 +10,7 @@ from pathlib import Path
 
 import anyio
 import numpy as np
+import rasterio
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import select
@@ -43,6 +44,7 @@ from ..services.raster_service import (
     make_grid,
     patch_features,
     patch_validity,
+    validate_grid_compatibility,
 )
 from ..services.training_service import align_probabilities
 from ..storage import project_dir
@@ -115,18 +117,43 @@ async def _run_inference(
             detail=f"Region {region.model_dump()} outside dataset bounds {dataset.width}x{dataset.height}",
         )
 
-    patch_size, stride = checkpoint["patch_size"], checkpoint["stride"]
+    resolution = checkpoint.get("resolution", "patch")
+    patch_size, stride = (1, 1) if resolution == "pixel" else (checkpoint["patch_size"], checkpoint["stride"])
 
     def _compute():
-        arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
-        crop = arr[:, region.y0 : region.y1, region.x0 : region.x1]
-        grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
-        X = patch_features(crop, grid)
-        valid = patch_validity(crop, grid)
         model = checkpoint["model"]
-        raw = np.asarray(model.predict_proba(X))
-        model_classes = [run.classes[int(c)] for c in model.classes_]
-        probs = align_probabilities(raw, model_classes, run.classes)
+        if resolution == "pixel":
+            from ..services.raster_service import pixel_features
+            h, w = region.y1 - region.y0, region.x1 - region.x0
+            grid = make_grid(h, w, 1, 1)
+            with rasterio.open(dataset.path) as src:
+                if src.count * src.width * src.height > settings.max_raster_elements:
+                    raise RasterError(f"Raster exceeds configured processing limit ({src.count}x{src.height}x{src.width})")
+                k = len(run.classes)
+                probability_cube = np.zeros((k, h, w), dtype=np.float32)
+                valid = np.zeros((h, w), dtype=bool)
+                for y0 in range(0, h, 256):
+                    for x0 in range(0, w, 256):
+                        bh, bw = min(256, h - y0), min(256, w - x0)
+                        window = rasterio.windows.Window(region.x0 + x0, region.y0 + y0, bw, bh)
+                        block = src.read(window=window, masked=True, out_dtype="float32").filled(np.nan)
+                        X_block, valid_block = pixel_features(block)
+                        raw_block = np.asarray(model.predict_proba(X_block))
+                        model_classes = [run.classes[int(c)] for c in model.classes_]
+                        aligned = align_probabilities(raw_block, model_classes, run.classes)
+                        probability_cube[:, y0:y0 + bh, x0:x0 + bw] = aligned.T.reshape(k, bh, bw)
+                        valid[y0:y0 + bh, x0:x0 + bw] = valid_block.reshape(bh, bw)
+                valid = valid.reshape(-1)
+                probs = np.moveaxis(probability_cube, 0, -1).reshape(h * w, k)
+        else:
+            arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
+            crop = arr[:, region.y0 : region.y1, region.x0 : region.x1]
+            grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
+            X = patch_features(crop, grid)
+            valid = patch_validity(crop, grid)
+            raw = np.asarray(model.predict_proba(X))
+            model_classes = [run.classes[int(c)] for c in model.classes_]
+            probs = align_probabilities(raw, model_classes, run.classes)
         hard, prob, unc = maps_from_inference(probs, valid, grid.shape, method)
         return grid, valid, hard, prob, unc
 
@@ -149,13 +176,28 @@ async def _run_inference(
         lambda: export_hard_geotiff(hard_path, hard, run.classes, dataset.crs, transform, meta)
     )
     await anyio.to_thread.run_sync(
-        lambda: export_probability_geotiff(prob_path, prob, run.classes, dataset.crs, transform, meta)
+        lambda: export_probability_geotiff(prob_path, prob, run.classes, dataset.crs, transform, meta, valid=valid)
     )
     await anyio.to_thread.run_sync(
         lambda: export_uncertainty_geotiff(
             unc_path, unc, run.classes, dataset.crs, transform, method, meta
         )
     )
+
+    if resolution == "pixel":
+        def _validate_exports():
+            import rasterio
+            window = (region.x0, region.y0, region.x1 - region.x0, region.y1 - region.y0)
+            with rasterio.open(dataset.path) as reference:
+                for export_path in (hard_path, prob_path, unc_path):
+                    with rasterio.open(export_path) as candidate:
+                        validate_grid_compatibility(reference, candidate, window=window)
+        try:
+            await anyio.to_thread.run_sync(_validate_exports)
+        except RasterError as exc:
+            for failed_path in (hard_path, prob_path, unc_path):
+                failed_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=f"Export grid validation failed: {exc}") from exc
 
     for etype, path in (("hard", hard_path), ("probability", prob_path), ("uncertainty", unc_path)):
         session.add(

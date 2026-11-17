@@ -308,9 +308,15 @@ def export_probability_geotiff(
     crs: str | None,
     transform: Affine,
     grid: dict | None = None,
+    valid: np.ndarray | None = None,
 ) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     k, h, w = prob.shape
+    data = prob.astype(np.float32, copy=True)
+    if valid is not None:
+        if valid.size != h * w:
+            raise ValueError("Probability validity mask shape does not match output grid")
+        data[:, ~valid.reshape(h, w)] = -9999.0
     with rasterio.open(
         path,
         "w",
@@ -321,9 +327,10 @@ def export_probability_geotiff(
         dtype="float32",
         crs=crs,
         transform=transform,
+        nodata=-9999.0 if valid is not None else None,
         compress="deflate",
     ) as dst:
-        dst.write(prob.astype(np.float32))
+        dst.write(data)
         for i, name in enumerate(classes):
             dst.set_band_description(i + 1, name)
         tags = dict(classes=json.dumps(classes), description="RSAL per-class probability map")

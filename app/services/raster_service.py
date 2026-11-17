@@ -102,18 +102,69 @@ def extract_metadata(path: str | Path) -> dict:
 
 
 def load_raster(path: str | Path, nodata: float | None, max_elements: int) -> np.ndarray:
-    """Load raster as float32 (bands, H, W); nodata/non-finite become NaN."""
+    """Load raster as float32 (bands, H, W); masked/non-finite pixels become NaN."""
     with rasterio.open(path) as ds:
         if ds.count * ds.height * ds.width > max_elements:
             raise RasterError(
                 f"Raster too large for synchronous MVP processing "
                 f"({ds.count}x{ds.height}x{ds.width} > {max_elements} elements)"
             )
-        arr = ds.read().astype(np.float32)
+        # read_masks honors per-band GDAL masks as well as nodata metadata.
+        masked = ds.read(masked=True, out_dtype="float32")
+        arr = masked.filled(np.nan)
     arr[~np.isfinite(arr)] = np.nan
     if nodata is not None:
         arr[arr == np.float32(nodata)] = np.nan
     return arr
+
+
+def pixel_features(arr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Return one spectral feature vector per pixel and a strict all-band validity mask.
+
+    The first axis is bands; features are row-major pixels by band. Invalid
+    pixels are retained in-place as zero vectors and must be masked at inference.
+    """
+    if arr.ndim != 3:
+        raise RasterError("Expected raster array shaped (bands, height, width)")
+    valid = np.isfinite(arr).all(axis=0)
+    features = np.moveaxis(arr, 0, -1).reshape(-1, arr.shape[0]).astype(np.float32, copy=False)
+    features = np.where(np.isfinite(features), features, 0.0)
+    return features, valid.reshape(-1)
+
+
+def validate_grid_compatibility(reference, candidate, *, window=None, atol: float = 1e-9) -> None:
+    """Raise RasterError unless candidate matches reference or its integer window grid.
+
+    `window` is (col_off, row_off, width, height) in reference pixels and is
+    useful for region exports. No reprojection or resampling is attempted.
+    """
+    def affine_bounds(width, height, transform):
+        corners = [transform * p for p in ((0, 0), (width, 0), (0, height), (width, height))]
+        xs, ys = zip(*corners)
+        return (min(xs), min(ys), max(xs), max(ys))
+
+    if window is None:
+        expected_width, expected_height = reference.width, reference.height
+        expected_transform = reference.transform
+    else:
+        from rasterio.windows import Window
+        col_off, row_off, width, height = window
+        win = Window(col_off, row_off, width, height)
+        expected_width, expected_height = int(width), int(height)
+        expected_transform = reference.window_transform(win)
+    expected_bounds = affine_bounds(expected_width, expected_height, expected_transform)
+    candidate_bounds = affine_bounds(candidate.width, candidate.height, candidate.transform)
+    mismatches = []
+    if (expected_width, expected_height) != (candidate.width, candidate.height):
+        mismatches.append("width/height")
+    if reference.crs != candidate.crs:
+        mismatches.append("CRS")
+    if not np.allclose(tuple(expected_transform), tuple(candidate.transform), rtol=0, atol=atol):
+        mismatches.append("affine transform/pixel size")
+    if not np.allclose(tuple(expected_bounds), tuple(candidate_bounds), rtol=0, atol=atol):
+        mismatches.append("bounds")
+    if mismatches:
+        raise RasterError("Raster grids are incompatible: " + ", ".join(mismatches))
 
 
 def patch_validity(arr: np.ndarray, grid: PatchGrid) -> np.ndarray:
@@ -128,9 +179,8 @@ def patch_validity(arr: np.ndarray, grid: PatchGrid) -> np.ndarray:
     for y in grid.ys:
         for x in grid.xs:
             patch = arr[:, y : y + grid.patch_h, x : x + grid.patch_w]
-            # Cheap pre-check: a mostly-nodata patch is still useful if part of it
-            # has data, so only fully-empty regions are dropped.
-            valid[i] = bool(np.any(~np.isnan(patch[:, ::4, ::4]))) if patch.size else False
+            # Scan every pixel; sparse valid edges must not be mistaken for nodata.
+            valid[i] = bool(np.any(np.isfinite(patch))) if patch.size else False
             i += 1
     return valid
 

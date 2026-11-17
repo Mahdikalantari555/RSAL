@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from .conftest import point_label
 
 
@@ -71,6 +73,39 @@ class TestLabels:
         resp = client.post(f"/projects/{project['id']}/labels", json=lbl)
         assert resp.status_code == 201
         assert resp.json()["sample_id"] == f"d{dataset['id']}_r0_c0"
+
+    def test_out_of_bounds_point_and_invalid_polygon_rejected(self, client, project, dataset):
+        outside = client.post(f"/projects/{project['id']}/labels", json=point_label(64, 10, "water"))
+        assert outside.status_code == 422
+        malformed = client.post(f"/projects/{project['id']}/labels", json={
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [4, 0], [4, 4], [0, 4]]]},
+            "class_name": "water",
+        })
+        assert malformed.status_code == 422
+        assert client.get(f"/projects/{project['id']}/labels").json() == []
+
+    def test_pixel_sample_identity_is_not_patch_identity(self, client, project, dataset):
+        a = client.post(f"/projects/{project['id']}/labels", json=point_label(1, 1, "water", sample_resolution="pixel"))
+        b = client.post(f"/projects/{project['id']}/labels", json=point_label(2, 2, "vegetation", sample_resolution="pixel"))
+        assert a.status_code == b.status_code == 201
+        assert a.json()["sample_id"] != b.json()["sample_id"]
+
+    def test_map_label_declared_crs_is_reprojected_to_dataset(self, client, project, dataset):
+        from rasterio.warp import transform
+        lon, lat = transform("EPSG:32631", "EPSG:4326", [500044.0], [4649732.0])
+        response = client.post(f"/projects/{project['id']}/labels", json=point_label(
+            lon[0], lat[0], "water", coordinate_space="map", coordinate_crs="EPSG:4326"
+        ))
+        assert response.status_code == 201, response.text
+        assert response.json()["sample_id"] == f"d{dataset['id']}_r0_c0"
+        assert response.json()["geometry"]["coordinates"][0] == pytest.approx(500044.0, abs=0.01)
+
+    def test_self_intersecting_polygon_rejected(self, client, project, dataset):
+        response = client.post(f"/projects/{project['id']}/labels", json={
+            "geometry": {"type": "Polygon", "coordinates": [[[0, 0], [8, 8], [0, 8], [8, 0], [0, 0]]]},
+            "class_name": "water",
+        })
+        assert response.status_code == 422
 
     def test_labels_missing_project_404(self, client):
         assert client.post("/projects/9999/labels", json=point_label(1, 1, "water")).status_code == 404

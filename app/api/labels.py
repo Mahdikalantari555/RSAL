@@ -9,7 +9,7 @@ from ..models import Label
 from ..schemas import LabelBatchCreate, LabelCreate, LabelOut
 from ..services.label_service import derive_sample_id, latest_labels
 from ..services.pipeline import run_training
-from ..services.raster_service import make_grid
+from ..services.raster_service import make_grid, map_to_pixel
 from ..services.training_service import TrainingError
 from .deps import (
     SessionDep,
@@ -37,12 +37,56 @@ async def _store_label(session, settings, project, payload: LabelCreate) -> Labe
     else:
         dataset = await latest_dataset(session, project.id)
 
+    if payload.coordinate_crs and payload.coordinate_space != "map":
+        raise HTTPException(status_code=422, detail="coordinate_crs is only valid with coordinate_space='map'")
+    if payload.coordinate_crs and dataset is None:
+        raise HTTPException(status_code=422, detail="coordinate_crs conversion requires a selected dataset")
+    effective_payload = payload
+    if dataset is not None:
+        geom = payload.geometry.model_dump()
+        if payload.coordinate_space == "map":
+            if not dataset.transform:
+                raise HTTPException(status_code=422, detail="Map-coordinate labels require a dataset affine transform")
+            if payload.coordinate_crs:
+                if not dataset.crs:
+                    raise HTTPException(status_code=422, detail="CRS conversion requires a georeferenced dataset")
+                try:
+                    from rasterio.warp import transform as reproject_coordinates
+                    if geom["type"] == "Point":
+                        xx, yy = reproject_coordinates(payload.coordinate_crs, dataset.crs, [geom["coordinates"][0]], [geom["coordinates"][1]])
+                        geom["coordinates"][:2] = [xx[0], yy[0]]
+                    else:
+                        for ring in geom["coordinates"]:
+                            xx, yy = reproject_coordinates(payload.coordinate_crs, dataset.crs, [p[0] for p in ring], [p[1] for p in ring])
+                            for position, x, y in zip(ring, xx, yy):
+                                position[0], position[1] = x, y
+                    effective_payload = payload.model_copy(update={
+                        "geometry": payload.geometry.__class__.model_validate(geom),
+                        "coordinate_crs": None,
+                    })
+                except Exception as exc:
+                    raise HTTPException(status_code=422, detail=f"Could not transform label coordinates to dataset CRS: {exc}") from exc
+            def to_pixel(position):
+                return map_to_pixel(dataset.transform, float(position[0]), float(position[1]))
+        else:
+            def to_pixel(position):
+                return float(position[0]), float(position[1])
+        if geom["type"] == "Point":
+            px, py = to_pixel(geom["coordinates"])
+            if not (0 <= px < dataset.width and 0 <= py < dataset.height):
+                raise HTTPException(status_code=422, detail="Point label lies outside dataset pixel bounds")
+        else:
+            pts = [to_pixel(position) for ring in geom["coordinates"] for position in ring]
+            xs, ys = zip(*pts)
+            if max(xs) <= 0 or max(ys) <= 0 or min(xs) >= dataset.width or min(ys) >= dataset.height:
+                raise HTTPException(status_code=422, detail="Polygon label does not overlap dataset pixel bounds")
+
     grid = (
         make_grid(dataset.height, dataset.width, settings.patch_size, settings.resolved_stride())
         if dataset is not None
         else None
     )
-    sid, stype = derive_sample_id(payload, dataset, grid)
+    sid, stype = derive_sample_id(effective_payload, dataset, grid)
 
     result = await session.execute(
         select(func.max(Label.version)).where(
@@ -56,7 +100,7 @@ async def _store_label(session, settings, project, payload: LabelCreate) -> Labe
         dataset_id=dataset.id if dataset is not None else None,
         sample_id=sid,
         sample_type=stype,
-        geometry=payload.geometry.model_dump(),
+        geometry=effective_payload.geometry.model_dump(),
         coordinate_space=payload.coordinate_space,
         class_name=payload.class_name,
         iteration=payload.iteration,

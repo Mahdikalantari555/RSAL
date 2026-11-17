@@ -10,8 +10,11 @@ from app.services.raster_service import (
     map_to_pixel,
     parse_sample_id,
     patch_features,
+    pixel_features,
     pixel_to_map,
     points_in_polygon,
+    validate_grid_compatibility,
+    RasterError,
     sample_id,
 )
 
@@ -61,8 +64,43 @@ class TestFeatures:
         feats = patch_features(arr, grid)
         assert np.isfinite(feats).all()
 
+    def test_pixel_features_keep_pixel_order_and_mask_invalid(self):
+        arr = np.arange(2 * 3 * 5, dtype=np.float32).reshape(2, 3, 5)
+        arr[1, 1, 2] = np.nan
+        feats, valid = pixel_features(arr)
+        assert feats.shape == (15, 2)
+        assert feats[0].tolist() == [0.0, 15.0]
+        assert valid.reshape(3, 5)[1, 2] == False
+        assert feats[7].tolist() == [7.0, 0.0]  # preserve other band; mask controls use
+
+    def test_patch_validity_does_not_miss_sparse_valid_edge(self):
+        from app.services.raster_service import patch_validity
+        arr = np.full((1, 8, 8), np.nan, dtype=np.float32)
+        arr[0, 1, 1] = 7
+        grid = make_grid(8, 8, 8, 8)
+        assert patch_validity(arr, grid).tolist() == [True]
+
 
 class TestGeo:
+    def test_grid_compatibility_checks_exact_reference_grid(self, tmp_path):
+        import rasterio
+        from rasterio.transform import from_origin
+
+        path_a, path_b = tmp_path / "a.tif", tmp_path / "b.tif"
+        profile = dict(driver="GTiff", width=5, height=3, count=1, dtype="uint8", crs="EPSG:32632", transform=from_origin(500000, 500100, 10, 20))
+        with rasterio.open(path_a, "w", **profile) as dst:
+            dst.write(np.ones((1, 3, 5), dtype=np.uint8))
+        with rasterio.open(path_b, "w", **profile) as dst:
+            dst.write(np.ones((1, 3, 5), dtype=np.uint8))
+        with rasterio.open(path_a) as ref, rasterio.open(path_b) as candidate:
+            validate_grid_compatibility(ref, candidate)
+        bad = dict(profile, transform=from_origin(500001, 500100, 10, 20))
+        with rasterio.open(path_b, "w", **bad) as dst:
+            dst.write(np.ones((1, 3, 5), dtype=np.uint8))
+        with rasterio.open(path_a) as ref, rasterio.open(path_b) as candidate:
+            with pytest.raises(RasterError, match="transform"):
+                validate_grid_compatibility(ref, candidate)
+
     def test_map_pixel_roundtrip(self):
         transform = [10.0, 0.0, 500000.0, 0.0, -10.0, 4649776.0]
         col, row = map_to_pixel(transform, 500040.0, 4649736.0)

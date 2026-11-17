@@ -117,6 +117,14 @@ def derive_sample_id(label_data, dataset: Dataset | None, grid: PatchGrid | None
     if label_data.sample_id:
         return label_data.sample_id, stype
 
+    if gtype == "Point" and dataset is not None and getattr(label_data, "sample_resolution", "patch") == "pixel":
+        geom = label_data.geometry.model_dump()
+        if label_data.coordinate_space == "map":
+            x, y = map_to_pixel(dataset.transform, float(geom["coordinates"][0]), float(geom["coordinates"][1]))
+        else:
+            x, y = float(geom["coordinates"][0]), float(geom["coordinates"][1])
+        return f"d{dataset.id}_p{int(np.floor(y))}_c{int(np.floor(x))}", stype
+
     if gtype == "Point" and dataset is not None and grid is not None:
         geom = label_data.geometry.model_dump()
         if label_data.coordinate_space == "map":
@@ -135,6 +143,45 @@ def derive_sample_id(label_data, dataset: Dataset | None, grid: PatchGrid | None
         {"g": label_data.geometry.model_dump(), "d": label_data.dataset_id, "s": label_data.coordinate_space}
     )
     return f"{prefix}_{hashlib.sha1(payload.encode()).hexdigest()[:16]}", stype
+
+
+def build_pixel_training_targets(
+    labels: list[Label], datasets: dict[int, Dataset], default_dataset: Dataset | None,
+    class_names: list[str],
+) -> dict[int, dict[tuple[int, int], int]]:
+    """Resolve latest labels to source pixel indices; later corrections win.
+
+    Point labels use their containing pixel. Polygon labels target pixel centers
+    using the existing even-odd geometry routine. Out-of-bounds/unknown labels
+    are excluded explicitly by callers rather than coerced onto the raster.
+    """
+    class_index = {name: i for i, name in enumerate(class_names)}
+    result: dict[int, dict[tuple[int, int], int]] = {}
+    ordered = sorted(latest_labels(labels), key=lambda l: (l.iteration, l.version, l.id))
+    for label in ordered:
+        if label.class_name not in class_index:
+            continue
+        ds = datasets.get(label.dataset_id) if label.dataset_id is not None else default_dataset
+        if ds is None:
+            continue
+        geom = label_to_pixel_geometry(label, ds)
+        target = class_index[label.class_name]
+        pixels = result.setdefault(ds.id, {})
+        if geom["type"] == "Point":
+            x, y = map(float, geom["coordinates"])
+            col, row = int(np.floor(x)), int(np.floor(y))
+            if 0 <= col < ds.width and 0 <= row < ds.height:
+                pixels[(row, col)] = target
+        elif geom["type"] == "Polygon":
+            rings = geom["coordinates"]
+            # Evaluate row strips to cap temporary memory on large polygons.
+            for row0 in range(0, ds.height, 256):
+                row1 = min(ds.height, row0 + 256)
+                yy, xx = np.mgrid[row0:row1, 0:ds.width]
+                inside = points_in_polygon(xx.ravel() + 0.5, yy.ravel() + 0.5, rings).reshape(row1-row0, ds.width)
+                for rr, cc in np.argwhere(inside):
+                    pixels[(row0 + int(rr), int(cc))] = target
+    return {ds_id: pix for ds_id, pix in result.items() if pix}
 
 
 def build_training_targets(

@@ -155,6 +155,32 @@ verified end-to-end by:
 .venv/bin/python scripts/frontend_smoke.py --base http://localhost:3000
 ```
 
+## Classification resolution and evaluation
+
+Training remains patch-based by default for backward compatibility. To explicitly
+train a pixel-feature RF/LightGBM checkpoint, pass `"resolution": "pixel"` to
+`POST /projects/{id}/train`. Pixel models use the source pixel's band values,
+labels rasterized to source pixel centers (points use their containing pixel).
+When collecting multiple point labels within a legacy patch for pixel-mode
+training, submit each with `sample_resolution: "pixel"` so they are stored as
+distinct pixel identities. The model then predicts every source pixel directly; this is not an upsampled patch map.
+Their hard, probability, and uncertainty GeoTIFFs use the source pixel affine
+and the region dimensions. Pixel mode currently requires the same band count at
+inference and remains subject to the synchronous whole-raster memory guard.
+
+Training accepts `"evaluation_strategy": "spatial"` to attempt a block-grouped
+holdout; with insufficient independent blocks the response labels the result
+`insufficient_train_metrics` and marks the metrics as in-sample fit, not
+independent validation. The default `random` strategy preserves prior random
+holdout semantics. Per-class metrics include IoU. Neither strategy is a claim
+of improved accuracy.
+
+Labels with `coordinate_space: "map"` are interpreted in the dataset's own CRS;
+this is not an implicit WGS84 conversion. Point labels outside the selected
+raster are rejected. Polygon labels must be closed finite rings and overlap the
+dataset. `LICENSE` applies to repository code only; third-party components keep
+their own licenses, which require a separate redistribution review.
+
 ## Design decisions (resolving the proposal's open questions)
 
 - **Patch grid**: 32×32 px windows, stride = patch size (non-overlapping) by
