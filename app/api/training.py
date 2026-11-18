@@ -28,7 +28,8 @@ def run_to_metrics_out(run: TrainingRun) -> MetricsOut:
         confusion_matrix=m["confusion_matrix"],
         per_class=m["per_class"],
         classes=run.classes,
-        evaluation=m.get("evaluation", "holdout"),
+        evaluation=m.get("evaluation", "insufficient_train_metrics"),
+        evaluation_details=m.get("evaluation_warning"),
         created_at=run.created_at,
     )
 
@@ -43,6 +44,8 @@ async def train(project_id: int, payload: TrainRequest, session: SessionDep, set
             settings,
             project,
             model_type=payload.model_type,
+            resolution=payload.resolution,
+            evaluation_strategy=payload.evaluation_strategy,
             iteration=payload.iteration,
             test_size=payload.test_size,
             params=payload.params,

@@ -274,13 +274,18 @@ class TestUnsupervisedSom:
         assert float((cmap[:, :32] == left_cls).mean()) > 0.99
         assert float((cmap[:, 32:] == right_cls).mean()) > 0.99
 
-        # Download the exported GeoTIFF and verify CRS, dimensions, colormap
+        # Download the exported GeoTIFF and verify exact reference-grid alignment.
+        source = client.get(f"/projects/{project['id']}/dataset/{dataset['id']}/file")
+        with rasterio.open(io.BytesIO(source.content)) as reference:
+            expected_transform, expected_bounds = reference.transform, reference.bounds
         dl = client.get(f"/projects/{project['id']}/download/som")
         assert dl.status_code == 200
         with rasterio.open(io.BytesIO(dl.content)) as ds:
             assert ds.driver == "GTiff"
             assert ds.width == 64 and ds.height == 64
             assert ds.crs.to_string() == "EPSG:32631"
+            assert ds.transform == expected_transform
+            assert ds.bounds == expected_bounds
             assert ds.nodata == 65535
             assert 0 in ds.colormap(1)
             arr = ds.read(1)

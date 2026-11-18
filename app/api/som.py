@@ -29,7 +29,9 @@ from ..services.raster_service import (
     load_raster,
     make_grid,
     patch_features,
+    patch_validity,
     sample_id,
+    validate_grid_compatibility,
 )
 from ..services.som_service import (
     UnsupervisedSomResult,
@@ -292,7 +294,7 @@ async def run_som_classification(
         else:
             grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
             flat = patch_features(crop, grid)
-            valid_mask = np.ones(len(flat), dtype=bool)
+            valid_mask = patch_validity(crop, grid)
             out_shape = grid.shape
             transform = grid_transform(dataset.transform, grid, region.x0, region.y0, stride)
 
@@ -319,6 +321,11 @@ async def run_som_classification(
             dataset.crs,
             transform,
         )
+        if payload.resolution == "pixel":
+            import rasterio
+            window = (region.x0, region.y0, region.x1 - region.x0, region.y1 - region.y0)
+            with rasterio.open(dataset.path) as reference, rasterio.open(som_path) as output:
+                validate_grid_compatibility(reference, output, window=window)
         return result
 
     try:

@@ -1997,14 +1997,20 @@ kbd {
   border-radius: 5px;
   position: relative;
   background-color: #3f5031;
-  /* The image is the patch itself (windowed GeoTIFF read), so it fills the box
-     exactly. No background-size/background-position maths: those can never
-     agree with the map, which is what this replaced. */
-  background-size: 100% 100%;
-  background-repeat: no-repeat;
+  /* Use an actual contained image: stretching an arbitrary raster window into
+     the fixed review-card aspect ratio distorts rectangular/edge samples. */
   image-rendering: pixelated;
   overflow: hidden;
   isolation: isolate;
+}
+.sample-patch-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  pointer-events: none;
 }
 .sample-patch-wrap {
   display: flex;
@@ -2057,16 +2063,8 @@ kbd {
 }
 .patch-crosshair {
   position: absolute;
-  /* Inset border = the patch edge itself, so the crop boundary is visible. */
   inset: 0;
   border-radius: 4px;
-  width: auto;
-  height: auto;
-  left: 0;
-  top: 0;
-  border: 1px dashed #f5e0a3;
-  background: #f5df9b09;
-  box-shadow: 0 0 0 1px #f5e0a325;
   pointer-events: none;
 }
 .georef-reason {

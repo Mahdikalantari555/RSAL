@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -83,11 +84,32 @@ class Geometry(BaseModel):
     def coordinates_match_type(cls, v: list[Any], info) -> list[Any]:
         gtype = info.data.get("type")
         if gtype == "Point":
-            if len(v) < 2 or not all(isinstance(c, (int, float)) for c in v[:2]):
-                raise ValueError("Point coordinates must be [x, y]")
+            if len(v) < 2 or not all(isinstance(c, (int, float)) and math.isfinite(c) for c in v[:2]):
+                raise ValueError("Point coordinates must be finite [x, y]")
         elif gtype == "Polygon":
-            if not v or not isinstance(v[0], list) or len(v[0]) < 3:
-                raise ValueError("Polygon coordinates must be a list of rings with >= 3 positions")
+            if not v or not isinstance(v[0], list) or len(v[0]) < 1:
+                raise ValueError("Polygon coordinates must contain rings")
+            for ring in v:
+                if not isinstance(ring, list) or len(ring) < 4:
+                    raise ValueError("Polygon rings must have at least four positions")
+                for position in ring:
+                    if not isinstance(position, (list, tuple)) or len(position) < 2 or not all(isinstance(c, (int, float)) and math.isfinite(c) for c in position[:2]):
+                        raise ValueError("Polygon positions must contain finite [x, y] coordinates")
+                if list(ring[0][:2]) != list(ring[-1][:2]):
+                    raise ValueError("Polygon rings must be closed")
+                area = sum(ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1] for i in range(len(ring) - 1))
+                if abs(area) < 1e-15:
+                    raise ValueError("Polygon rings must have non-zero area")
+                segments = list(zip(ring[:-1], ring[1:]))
+                def orientation(a, b, c):
+                    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+                for i, (a, b) in enumerate(segments):
+                    for j in range(i + 1, len(segments)):
+                        if j == i + 1 or (i == 0 and j == len(segments) - 1):
+                            continue
+                        c, d = segments[j]
+                        if orientation(a, b, c) * orientation(a, b, d) < 0 and orientation(c, d, a) * orientation(c, d, b) < 0:
+                            raise ValueError("Polygon rings must not self-intersect")
         return v
 
 
@@ -98,6 +120,8 @@ class LabelCreate(BaseModel):
     iteration: int = Field(default=0, ge=0)
     dataset_id: int | None = None
     coordinate_space: Literal["pixel", "map"] = "pixel"
+    sample_resolution: Literal["patch", "pixel"] = "patch"
+    coordinate_crs: str | None = None
 
 
 class LabelBatchCreate(BaseModel):
@@ -161,6 +185,8 @@ class QueryResponse(BaseModel):
 # ---------------------------------------------------------------- training
 class TrainRequest(BaseModel):
     model_type: Literal["rf", "lightgbm"] = "rf"
+    resolution: Literal["patch", "pixel"] = "patch"
+    evaluation_strategy: Literal["random", "spatial"] = "random"
     iteration: int | None = Field(default=None, ge=0)
     test_size: float | None = Field(default=None, gt=0.0, lt=1.0)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -181,6 +207,7 @@ class MetricsOut(BaseModel):
     per_class: dict[str, dict[str, float]]
     classes: list[str]
     evaluation: str
+    evaluation_details: str | None = None
     created_at: datetime
 
 

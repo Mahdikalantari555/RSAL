@@ -13,7 +13,7 @@ from sklearn.metrics import (
     f1_score,
     precision_recall_fscore_support,
 )
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import GroupShuffleSplit, train_test_split
 
 SUPPORTED_MODELS = ("rf", "lightgbm")
 
@@ -41,16 +41,21 @@ def compute_metrics(y_true, y_pred, class_names: list[str]) -> dict:
     precision, recall, f1, support = precision_recall_fscore_support(
         y_true, y_pred, labels=labels, zero_division=0
     )
+    matrix = confusion_matrix(y_true, y_pred, labels=labels)
+    union = matrix.sum(axis=0) + matrix.sum(axis=1) - np.diag(matrix)
+    iou = np.divide(np.diag(matrix), union, out=np.zeros(len(labels), dtype=float), where=union != 0)
     return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
+        "confusion_matrix": matrix.tolist(),
+        "per_class_iou": {name: float(iou[i]) for i, name in enumerate(class_names)},
         "f1_macro": float(f1_score(y_true, y_pred, labels=labels, average="macro", zero_division=0)),
         "f1_weighted": float(f1_score(y_true, y_pred, labels=labels, average="weighted", zero_division=0)),
-        "confusion_matrix": confusion_matrix(y_true, y_pred, labels=labels).tolist(),
         "per_class": {
             name: {
                 "precision": float(precision[i]),
                 "recall": float(recall[i]),
                 "f1": float(f1[i]),
+                "iou": float(iou[i]),
                 "support": int(support[i]),
             }
             for i, name in enumerate(class_names)
@@ -66,6 +71,8 @@ def train_model(
     params: dict,
     test_size: float,
     random_state: int,
+    evaluation_strategy: str = "random",
+    groups: np.ndarray | None = None,
 ) -> tuple[object, dict, str]:
     """Fit a classifier and return (fitted_model, metrics, evaluation_mode).
 
@@ -83,9 +90,23 @@ def train_model(
     if len(y_arr) < 4:
         raise TrainingError(f"Training needs at least 4 labeled samples; found {len(y_arr)}.")
 
-    evaluation = "train"
-    can_split = len(y_arr) >= 8 and counts.min() >= 2
-    if can_split:
+    evaluation = "insufficient_train_metrics"
+    metrics = None
+    if evaluation_strategy not in {"random", "spatial"}:
+        raise TrainingError("evaluation_strategy must be 'random' or 'spatial'")
+    if evaluation_strategy == "spatial":
+        if groups is not None and len(groups) == len(y_arr) and len(np.unique(groups)) >= 3:
+            splitter = GroupShuffleSplit(n_splits=20, test_size=test_size, random_state=random_state)
+            for train_idx, test_idx in splitter.split(X, y_arr, groups):
+                if len(np.unique(y_arr[train_idx])) >= 2 and len(np.unique(y_arr[test_idx])) >= 2:
+                    eval_model = build_model(model_type, params, random_state)
+                    eval_model.fit(X[train_idx], y_arr[train_idx])
+                    metrics = compute_metrics(y_arr[test_idx], eval_model.predict(X[test_idx]), class_names)
+                    evaluation = "spatial_holdout"
+                    metrics["n_test"] = int(len(test_idx))
+                    metrics["held_out_groups"] = int(len(np.unique(groups[test_idx])))
+                    break
+    elif len(y_arr) >= 8 and counts.min() >= 2:
         try:
             X_tr, X_te, y_tr, y_te = train_test_split(
                 X, y_arr, test_size=test_size, random_state=random_state, stratify=y_arr
@@ -94,15 +115,26 @@ def train_model(
                 eval_model = build_model(model_type, params, random_state)
                 eval_model.fit(X_tr, y_tr)
                 metrics = compute_metrics(y_te, eval_model.predict(X_te), class_names)
-                evaluation = "holdout"
+                evaluation = "random_holdout"
+                metrics["n_test"] = int(len(y_te))
         except ValueError:
-            evaluation = "train"
+            pass
 
     model = build_model(model_type, params, random_state)
     model.fit(X, y_arr)
-    if evaluation == "train":
+    if metrics is None:
+        # Kept for backward compatibility, but explicitly not a validation score.
         metrics = compute_metrics(y_arr, model.predict(X), class_names)
+        group_count = len(np.unique(groups)) if groups is not None else 0
+        reason = (
+            f"spatial split could not form a two-class independent holdout from {group_count} spatial groups"
+            if evaluation_strategy == "spatial"
+            else "random stratified holdout lacked sufficient samples or class coverage"
+        )
+        metrics["evaluation_warning"] = f"Independent evaluation unavailable ({reason}); reported scores are training-set fit metrics."
     metrics["n_train"] = int(len(y_arr))
+    metrics["evaluation_strategy"] = evaluation_strategy
+    metrics["random_state"] = int(random_state)
     return model, metrics, evaluation
 
 
@@ -116,6 +148,7 @@ def save_checkpoint(
     patch_size: int,
     stride: int,
     bands: int,
+    resolution: str = "patch",
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -128,6 +161,7 @@ def save_checkpoint(
             "patch_size": patch_size,
             "stride": stride,
             "bands": bands,
+            "resolution": resolution,
             "format": "rsal-checkpoint-v1",
         },
         path,
