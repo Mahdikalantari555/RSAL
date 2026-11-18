@@ -31,6 +31,7 @@ import {
   type RsalSomResponse,
   type RsalTrainResponse,
 } from './rsal';
+import { sampleResolutionField, trainBody } from './payloads';
 import {
   applyAffine,
   assessGeoreferencing,
@@ -202,7 +203,7 @@ function savedLabelToSample(
 }
 
 /** Convert a browser label draft into an RSAL LabelCreate payload. */
-function toRsalLabel(
+export function toRsalLabel(
   input: LabelInput,
   iteration: number,
   datasets: RsalDataset[],
@@ -213,6 +214,8 @@ function toRsalLabel(
     class_name: className,
     iteration,
   };
+  Object.assign(payload, sampleResolutionField(input));
+
   const patch = PATCH_ID.exec(input.sampleId);
   if (patch) {
     // Review-queue sample: address the exact patch by id + pixel center.
@@ -694,9 +697,10 @@ export async function actionHandler(
 
     if (action === 'train' && method === 'POST') {
       const body = await request.json().catch(() => ({}));
-      const result = await rsalPost<RsalTrainResponse>(`${base}/train`, {
-        model_type: body.modelType === 'lightgbm' ? 'lightgbm' : 'rf',
-      });
+      // Forward every option the workspace exposes. Dropping them silently made
+      // "train at pixel resolution" impossible from the UI and hid the
+      // evaluation strategy behind API-only calls.
+      const result = await rsalPost<RsalTrainResponse>(`${base}/train`, trainBody(body));
       const history = await rsalGetOptional<RsalMetrics[]>(`${base}/metrics/history`);
       const previous = history?.filter((m) => m.id !== result.metrics.id).pop();
       return json({ iteration: toIteration(result.metrics, previous?.n_samples ?? 0) }, 201);

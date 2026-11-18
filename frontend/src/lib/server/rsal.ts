@@ -181,6 +181,8 @@ export interface RsalTrainResponse {
   project_id: number;
   iteration: number;
   model_type: string;
+  /** "pixel" | "patch": which feature family produced this checkpoint. */
+  resolution?: string;
   checkpoint: string;
   n_samples: number;
   metrics: RsalMetrics;

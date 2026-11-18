@@ -247,7 +247,8 @@ class TestExports:
             assert ds.tags()["method"] == "margin"
             assert json.loads(ds.tags()["classes"]) == ["water", "vegetation"]
             arr = ds.read(1)
-            assert arr.shape == (8, 8)
+            # Patch cells cover the source grid: 8x8 cells x 8 px = 64x64.
+            assert arr.shape == (64, 64)
             finite = arr[arr != ds.nodata]
             assert finite.size and finite.min() >= 0.0 and finite.max() <= 1.0
             assert ds.descriptions == ("margin",)
@@ -326,23 +327,24 @@ class TestExports:
         # NaN (invalid patch) stays unpainted
         assert np.all(uncertainty_colors(np.array([[np.nan]], dtype=np.float32)) == 0)
 
-    def test_export_geometry_matches_patch_grid(self, client, project, dataset, labeled):
+    def test_export_geometry_matches_patch_grid(self, client, project, dataset, labeled, geotiff_bytes):
         _train(client, project["id"])
         resp = client.get(f"/projects/{project['id']}/download/hard")
-        with rasterio.open(io.BytesIO(resp.content)) as ds:
+        with rasterio.open(io.BytesIO(resp.content)) as ds, rasterio.open(
+            io.BytesIO(geotiff_bytes)
+        ) as src:
             grid = json.loads(ds.tags()["grid"])
-            transform = ds.transform
-            assert (ds.height, ds.width) == (grid["rows"], grid["cols"])
-            stride = grid["stride"]
-            assert transform.a == pytest.approx(10 * stride)
-            assert abs(transform.e) == pytest.approx(10 * stride)
+            # Patch cells are painted on the source grid, so the export keeps the
+            # source dimensions/CRS/affine and every cell sits on its pixel window.
+            assert (ds.height, ds.width) == (src.height, src.width)
+            assert ds.crs == src.crs
+            assert tuple(ds.transform)[:6] == pytest.approx(tuple(src.transform)[:6])
+            assert ds.tags()["resolution"] == "patch-cells"
+            values = ds.read(1)
             for cell in grid["cells"]:
-                x0, y0 = transform * (cell["col"] + 0.5, cell["row"] + 0.5)
-                # cell centre of the export == centre of its real pixel window
-                true_x = 500000 + 10 * (cell["x0"] + cell["x1"]) / 2
-                true_y = 4649776 - 10 * (cell["y0"] + cell["y1"]) / 2
-                assert x0 == pytest.approx(true_x, abs=1e-6)
-                assert y0 == pytest.approx(true_y, abs=1e-6)
+                assert values[cell["y0"] : cell["y1"], cell["x0"] : cell["x1"]].min() == (
+                    values[cell["y0"] : cell["y1"], cell["x0"] : cell["x1"]].max()
+                )
 
     def test_clamped_edge_cells_are_not_misplaced(self, client, project, labeled):
         """A 70 px scene at 8 px patches: the last column/row is clamped."""

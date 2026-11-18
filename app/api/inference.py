@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 import uuid
 from pathlib import Path
 
@@ -27,15 +26,17 @@ from ..schemas import (
 from ..services.al_service import UNCERTAINTY_METHODS
 from ..services.inference_service import (
     class_colors,
+    export_hard_cells_geotiff,
     export_hard_geotiff,
+    export_probability_cells_geotiff,
     export_probability_geotiff,
+    export_uncertainty_cells_geotiff,
     export_uncertainty_geotiff,
-    grid_lattice,
     grid_metadata,
     maps_from_inference,
-    maps_from_probabilities,
+    pixel_transform,
     uncertainty_colors,
-    uncertainty_map,
+    validate_export_grid,
 )
 from ..services.pipeline import checkpoint_or_409
 from ..services.raster_service import (
@@ -44,7 +45,6 @@ from ..services.raster_service import (
     make_grid,
     patch_features,
     patch_validity,
-    validate_grid_compatibility,
 )
 from ..services.training_service import align_probabilities
 from ..storage import project_dir
@@ -118,17 +118,24 @@ async def _run_inference(
         )
 
     resolution = checkpoint.get("resolution", "patch")
-    patch_size, stride = (1, 1) if resolution == "pixel" else (checkpoint["patch_size"], checkpoint["stride"])
+    patch_size, stride = (
+        (1, 1) if resolution == "pixel" else (checkpoint["patch_size"], checkpoint["stride"])
+    )
+    region_h, region_w = region.y1 - region.y0, region.x1 - region.x0
 
     def _compute():
         model = checkpoint["model"]
         if resolution == "pixel":
             from ..services.raster_service import pixel_features
-            h, w = region.y1 - region.y0, region.x1 - region.x0
+
+            h, w = region_h, region_w
             grid = make_grid(h, w, 1, 1)
             with rasterio.open(dataset.path) as src:
                 if src.count * src.width * src.height > settings.max_raster_elements:
-                    raise RasterError(f"Raster exceeds configured processing limit ({src.count}x{src.height}x{src.width})")
+                    raise RasterError(
+                        f"Raster exceeds configured processing limit "
+                        f"({src.count}x{src.height}x{src.width})"
+                    )
                 k = len(run.classes)
                 probability_cube = np.zeros((k, h, w), dtype=np.float32)
                 valid = np.zeros((h, w), dtype=bool)
@@ -162,42 +169,84 @@ async def _run_inference(
     except RasterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    transform = grid_lattice(dataset.transform, stride, region.x0, region.y0)
-    meta = grid_metadata(grid, region.x0, region.y0, stride)
+    meta = grid_metadata(
+        grid, region.x0, region.y0, stride, include_cells=resolution != "pixel"
+    )
+    meta["resolution"] = "pixel" if resolution == "pixel" else "patch-cells"
+    meta["method"] = method
     if not persist:
-        return run, region, grid, valid, hard, prob, unc, patch_size, stride
+        return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution
+
+    # A classified raster without georeferencing is not usable data, and writing
+    # an identity transform would present a made-up location. Refuse explicitly.
+    if not dataset.crs:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Dataset has no CRS: refusing to write a GeoTIFF export that would "
+                "claim a georeference it does not have. Upload a georeferenced "
+                "raster to export maps (map layers and CSV stay available)."
+            ),
+        )
+
     export_dir = project_dir(settings, "exports", project.id)
     tag = f"ds{dataset.id}_iter{run.iteration}_{uuid.uuid4().hex[:8]}"
     hard_path = export_dir / f"hard_{tag}.tif"
     prob_path = export_dir / f"probability_{tag}.tif"
     unc_path = export_dir / f"uncertainty_{method}_{tag}.tif"
 
-    await anyio.to_thread.run_sync(
-        lambda: export_hard_geotiff(hard_path, hard, run.classes, dataset.crs, transform, meta)
-    )
-    await anyio.to_thread.run_sync(
-        lambda: export_probability_geotiff(prob_path, prob, run.classes, dataset.crs, transform, meta, valid=valid)
-    )
-    await anyio.to_thread.run_sync(
-        lambda: export_uncertainty_geotiff(
-            unc_path, unc, run.classes, dataset.crs, transform, method, meta
-        )
-    )
-
     if resolution == "pixel":
-        def _validate_exports():
-            import rasterio
-            window = (region.x0, region.y0, region.x1 - region.x0, region.y1 - region.y0)
-            with rasterio.open(dataset.path) as reference:
-                for export_path in (hard_path, prob_path, unc_path):
-                    with rasterio.open(export_path) as candidate:
-                        validate_grid_compatibility(reference, candidate, window=window)
-        try:
-            await anyio.to_thread.run_sync(_validate_exports)
-        except RasterError as exc:
-            for failed_path in (hard_path, prob_path, unc_path):
-                failed_path.unlink(missing_ok=True)
-            raise HTTPException(status_code=500, detail=f"Export grid validation failed: {exc}") from exc
+        # One value per source pixel on the window's exact affine.
+        transform = pixel_transform(dataset.transform, region.x0, region.y0)
+        writers = (
+            lambda: export_hard_geotiff(
+                hard_path, hard, run.classes, dataset.crs, transform, meta, resolution="pixel"
+            ),
+            lambda: export_probability_geotiff(
+                prob_path, prob, run.classes, dataset.crs, transform, meta,
+                valid=valid, resolution="pixel",
+            ),
+            lambda: export_uncertainty_geotiff(
+                unc_path, unc, run.classes, dataset.crs, transform, method, meta,
+                resolution="pixel",
+            ),
+        )
+    else:
+        # One value per patch cell, painted over the cell's true pixel window.
+        transform = pixel_transform(dataset.transform, region.x0, region.y0)
+        writers = (
+            lambda: export_hard_cells_geotiff(
+                hard_path, hard, valid.reshape(grid.shape), grid, run.classes,
+                dataset.crs, transform, region_h, region_w, meta,
+            ),
+            lambda: export_probability_cells_geotiff(
+                prob_path, prob, valid.reshape(grid.shape), grid, run.classes,
+                dataset.crs, transform, region_h, region_w, meta,
+            ),
+            lambda: export_uncertainty_cells_geotiff(
+                unc_path, unc, valid.reshape(grid.shape), grid, run.classes,
+                dataset.crs, transform, method, region_h, region_w, meta,
+            ),
+        )
+
+    for write in writers:
+        await anyio.to_thread.run_sync(write)
+
+    def _validate_exports():
+        validate_export_grid(
+            dataset.path, (hard_path, prob_path, unc_path), (region.x0, region.y0, region_w, region_h)
+        )
+
+    try:
+        await anyio.to_thread.run_sync(_validate_exports)
+    except RasterError as exc:
+        for failed_path in (hard_path, prob_path, unc_path):
+            Path(failed_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Export grid validation failed: {exc}") from exc
+    except Exception as exc:  # unreadable/incomplete artifact
+        for failed_path in (hard_path, prob_path, unc_path):
+            Path(failed_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Export could not be verified: {exc}") from exc
 
     for etype, path in (("hard", hard_path), ("probability", prob_path), ("uncertainty", unc_path)):
         session.add(
@@ -211,7 +260,7 @@ async def _run_inference(
             )
         )
     await session.commit()
-    return run, region, grid, valid, hard, prob, unc, patch_size, stride
+    return run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution
 
 
 @router.post("/predict", response_model=PredictResponse)
@@ -230,7 +279,9 @@ async def predict(
     _check_method(method)
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, payload.dataset_id)
-    run, region, grid, valid, hard, prob, unc, patch_size, stride = await _run_inference(
+    (
+        run, region, grid, valid, hard, prob, unc, patch_size, stride, resolution
+    ) = await _run_inference(
         session, settings, project, dataset, payload.region, payload.iteration, method
     )
     shape = grid.shape
@@ -239,17 +290,28 @@ async def predict(
         [None if not valid_grid[r, c] else round(float(unc[r, c]), 6) for c in range(shape[1])]
         for r in range(shape[0])
     ]
+    prob_json = [
+        [
+            [
+                None if not valid_grid[r, c] else round(float(band[r, c]), 6)
+                for c in range(shape[1])
+            ]
+            for r in range(shape[0])
+        ]
+        for band in prob
+    ]
     return PredictResponse(
         project_id=project.id,
         dataset_id=dataset.id,
         model_iteration=run.iteration,
         classes=run.classes,
+        resolution=resolution,
         region=region,
         grid_shape=list(shape),
         patch_size=patch_size,
         stride=stride,
         hard_map=hard.tolist() if payload.include_maps else None,
-        probability_map=np.round(prob, 6).tolist() if payload.include_maps else None,
+        probability_map=prob_json if payload.include_maps else None,
         uncertainty_map=unc_json if payload.include_maps else None,
         uncertainty_method=method if payload.include_maps else None,
         valid_map=valid_grid.tolist() if payload.include_maps else None,
@@ -280,7 +342,9 @@ async def predict_map(
     _check_method(method)
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
-    run, region, grid, valid, hard, _prob, unc, patch_size, stride = await _run_inference(
+    (
+        run, region, grid, valid, hard, _prob, unc, patch_size, stride, resolution
+    ) = await _run_inference(
         session, settings, project, dataset, None, iteration, method, persist=False
     )
     latest = await latest_run(session, project.id)
@@ -311,6 +375,7 @@ async def predict_map(
         model_iteration=run.iteration,
         training_run_id=run.id,
         classes=run.classes,
+        resolution=resolution,
         grid=MapGridOut(
             rows=shape[0],
             cols=shape[1],
@@ -385,8 +450,15 @@ async def download(
         _check_method(method)
 
     export = await _latest_export(session, project_id, etype, dataset_id, method)
+    latest = await latest_run(session, project_id)
+    stale = bool(
+        export is not None
+        and latest is not None
+        and etype != "som"
+        and export.training_run_id != latest.id
+    )
 
-    if export is None:
+    if export is None or stale:
         dataset = await require_dataset(session, project_id, dataset_id)
         if etype == "som":
             from ..schemas import SomClassifyRequest
@@ -396,19 +468,32 @@ async def download(
                 session, settings, project, dataset, SomClassifyRequest(dataset_id=dataset.id)
             )
         else:
-            # `_latest_export` already filters by method, which matters for
-            # uncertainty: each method is a separate artifact, so a plain
-            # "newest row of this type" lookup could hand back another method.
+            # A newer run exists than the artifact on disk: re-running inference
+            # is the only way to hand back the model the user just trained.
+            # `_latest_export` filters by method so uncertainty artifacts of a
+            # different method are never substituted.
             await _run_inference(session, settings, project, dataset, None, None, method)
             export = await _latest_export(session, project_id, etype, dataset.id, method)
             if export is None:
                 raise HTTPException(status_code=500, detail="Export failed")
+            stale = False
 
     suffix = f"_{method}" if etype == "uncertainty" else ""
+    iteration = None
+    if export.training_run_id is not None:
+        from ..models import TrainingRun
+
+        run = await session.get(TrainingRun, export.training_run_id)
+        iteration = run.iteration if run is not None else None
+    headers = {
+        "X-RSAL-Export-Stale": "true" if stale else "false",
+        "X-RSAL-Model-Iteration": str(iteration) if iteration is not None else "",
+    }
     return FileResponse(
         export.path,
         media_type="image/tiff",
         filename=f"project_{project_id}_{etype}{suffix}_ds{export.dataset_id}.tif",
+        headers=headers,
     )
 
 
@@ -432,7 +517,9 @@ async def download_png(
         _check_method(method)
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
-    run, _region, grid, valid, hard, _prob, unc, _patch, _stride = await _run_inference(
+    (
+        run, _region, grid, valid, hard, _prob, unc, _patch, _stride, _res
+    ) = await _run_inference(
         session, settings, project, dataset, None, None, method, persist=False
     )
     palette = class_colors(len(run.classes))
@@ -467,7 +554,8 @@ async def download_png(
         headers={
             "content-disposition": (
                 f'attachment; filename="project_{project_id}_{export_type}{suffix}.png"'
-            )
+            ),
+            "X-RSAL-Model-Iteration": str(run.iteration),
         },
     )
 
@@ -491,7 +579,9 @@ async def download_csv(
         _check_method(method)
     project = await get_project(session, project_id)
     dataset = await require_dataset(session, project_id, dataset_id)
-    run, region, grid, valid, hard, _prob, unc, _patch, _stride = await _run_inference(
+    (
+        run, region, grid, valid, hard, _prob, unc, _patch, _stride, _res
+    ) = await _run_inference(
         session, settings, project, dataset, None, None, method, persist=False
     )
     shape = grid.shape

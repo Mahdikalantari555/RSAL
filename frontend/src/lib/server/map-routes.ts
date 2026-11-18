@@ -18,6 +18,8 @@ export interface MapField {
   modelIteration: number;
   trainingRunId: number;
   classes: string[];
+  /** "pixel" = one prediction per source pixel, "patch" = one per patch cell. */
+  resolution: string;
   grid: { rows: number; cols: number; patchSize: number; stride: number };
   /** rows × cols; `null` where the patch has no valid pixels. */
   values: (number | null)[][];
@@ -35,6 +37,7 @@ interface RsalMapField {
   model_iteration: number;
   training_run_id: number;
   classes: string[];
+  resolution?: string;
   grid: {
     rows: number;
     cols: number;
@@ -108,6 +111,7 @@ export async function mapFieldHandler(
       modelIteration: field.model_iteration,
       trainingRunId: field.training_run_id,
       classes: field.classes,
+      resolution: field.resolution === 'pixel' ? 'pixel' : 'patch',
       grid: {
         rows: field.grid.rows,
         cols: field.grid.cols,

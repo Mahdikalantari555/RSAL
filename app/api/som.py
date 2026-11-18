@@ -22,8 +22,14 @@ from ..schemas import (
     SomResponse,
 )
 from ..services.al_service import uncertainty_scores
-from ..services.inference_service import export_som_geotiff, grid_transform, pixel_transform
+from ..services.inference_service import (
+    export_som_geotiff,
+    grid_metadata,
+    pixel_transform,
+    validate_export_grid,
+)
 from ..services.label_service import build_training_targets
+from ..services.pipeline import checkpoint_or_409
 from ..services.raster_service import (
     RasterError,
     load_raster,
@@ -31,7 +37,6 @@ from ..services.raster_service import (
     patch_features,
     patch_validity,
     sample_id,
-    validate_grid_compatibility,
 )
 from ..services.som_service import (
     UnsupervisedSomResult,
@@ -39,7 +44,7 @@ from ..services.som_service import (
     fit_som,
     normalized_band_profiles,
 )
-from ..services.training_service import align_probabilities, load_checkpoint
+from ..services.training_service import align_probabilities
 from ..storage import project_dir
 from .deps import (
     SessionDep,
@@ -65,14 +70,32 @@ async def _run_som(
     run = await latest_run(session, project_id)
     checkpoint = None
     model_iteration: int | None = None
+    model_note: str | None = None
     if run is not None and Path(run.checkpoint_path).exists():
-        loaded = load_checkpoint(run.checkpoint_path)
-        if loaded.get("bands") == dataset.bands:
+        loaded = checkpoint_or_409(run)
+        if loaded.get("bands") != dataset.bands:
+            model_note = (
+                f"Model expects {loaded['bands']} bands but dataset {dataset.id} has "
+                f"{dataset.bands}; no supervised annotations are shown."
+            )
+        elif loaded.get("resolution") != "patch":
+            # Patch embeddings cannot be scored by a pixel-feature model; saying so
+            # is better than a 500 or a silently wrong overlay.
+            model_note = (
+                f"Latest model (iteration {run.iteration}) was trained at "
+                f"{loaded.get('resolution')} resolution and cannot annotate patch "
+                "cells; retrain with resolution='patch' to show predictions."
+            )
+        else:
             checkpoint = loaded
             model_iteration = run.iteration
 
-    patch_size = payload.patch_size or (checkpoint["patch_size"] if checkpoint else settings.patch_size)
-    stride = payload.stride or (checkpoint["stride"] if checkpoint else settings.resolved_stride())
+    patch_size = payload.patch_size or (
+        checkpoint["patch_size"] if checkpoint else settings.patch_size
+    )
+    stride = payload.stride or (
+        checkpoint["stride"] if checkpoint else settings.resolved_stride()
+    )
     grid = make_grid(dataset.height, dataset.width, patch_size, stride)
 
     labels = await project_labels(session, project_id)
@@ -89,7 +112,15 @@ async def _run_som(
 
     def _compute() -> SomResponse:
         arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
-        X = patch_features(arr, grid)
+        X_all = patch_features(arr, grid)
+        valid = patch_validity(arr, grid)
+        valid_idx = np.flatnonzero(valid)
+        if valid_idx.size == 0:
+            raise RasterError("Dataset contains no valid (non-nodata) patches to map")
+        # Fit and summarise on valid patches only: an all-nodata patch has an
+        # all-zero embedding that would otherwise dominate a neuron and be
+        # offered as a review sample.
+        X = X_all[valid_idx]
         som = fit_som(
             X,
             rows=payload.rows,
@@ -114,9 +145,11 @@ async def _run_som(
             confs = probs.max(axis=1)
             uncs = uncertainty_scores(probs, "entropy")
 
+        # `som` was fitted on valid patches only, so its BMU indices are local to
+        # `valid_idx`; the grid/sample ids need the global patch index.
         grouped: dict[int, list[int]] = {}
-        for patch_i, bmu in enumerate(som.bmus.tolist()):
-            grouped.setdefault(int(bmu), []).append(patch_i)
+        for local_i, bmu in enumerate(som.bmus.tolist()):
+            grouped.setdefault(int(bmu), []).append(local_i)
 
         class_rank = {c: idx for idx, c in enumerate(project.classes)}
         cells: list[SomCell] = []
@@ -130,8 +163,8 @@ async def _run_som(
                     active_neurons += 1
                     idx_arr = np.asarray(idxs, dtype=np.int64)
                     order = np.argsort(som.bmu_dists[idx_arr], kind="stable")
-                    ordered = [int(idx_arr[k]) for k in order]
-                    sids = [all_sids[k] for k in ordered]
+                    ordered = [int(idx_arr[k]) for k in order]  # local (valid) indices
+                    sids = [all_sids[int(valid_idx[k])] for k in ordered]
                     rep_sid = sids[0]
                     cell_qe = float(som.bmu_dists[idx_arr].mean())
                 else:
@@ -157,16 +190,18 @@ async def _run_som(
                 mean_conf: float | None = None
                 mean_unc: float | None = None
                 if probs is not None and ordered:
-                    for k in ordered:
+                    global_ordered = np.asarray(
+                        [int(valid_idx[k]) for k in ordered], dtype=np.int64
+                    )
+                    for k in global_ordered:
                         cname = project.classes[int(pred_idx[k])]
                         prediction_counts[cname] = prediction_counts.get(cname, 0) + 1
                     predicted_class = max(
                         prediction_counts.keys(),
                         key=lambda name: (prediction_counts[name], -class_rank.get(name, 999)),
                     )
-                    idx_arr = np.asarray(ordered, dtype=np.int64)
-                    mean_conf = float(confs[idx_arr].mean())
-                    mean_unc = float(uncs[idx_arr].mean())
+                    mean_conf = float(confs[global_ordered].mean())
+                    mean_unc = float(uncs[global_ordered].mean())
 
                 cells.append(
                     SomCell(
@@ -197,7 +232,10 @@ async def _run_som(
             cols=som.cols,
             epochs=som.epochs,
             total_patches=len(all_sids),
-            labeled_patches=len(label_by_sid),
+            valid_patches=int(valid_idx.size),
+            nodata_patches=int(len(all_sids) - valid_idx.size),
+            labeled_patches=sum(1 for sid in label_by_sid if sid in set(all_sids)),
+            model_note=model_note,
             active_neurons=active_neurons,
             quantization_error=som.quantization_error,
             topographic_error=som.topographic_error,
@@ -288,15 +326,20 @@ async def run_som_classification(
         crop = arr[:, region.y0 : region.y1, region.x0 : region.x1]
         if payload.resolution == "pixel":
             flat = np.moveaxis(crop, 0, -1).reshape(-1, dataset.bands)
-            valid_mask = np.isfinite(flat).any(axis=1)
+            # Same strictness as supervised pixel mode: one missing band makes
+            # the pixel nodata instead of being imputed into a cluster.
+            valid_mask = np.isfinite(flat).all(axis=1)
             out_shape = (crop.shape[1], crop.shape[2])
             transform = pixel_transform(dataset.transform, region.x0, region.y0)
+            grid_meta = None
         else:
             grid = make_grid(crop.shape[1], crop.shape[2], patch_size, stride)
             flat = patch_features(crop, grid)
             valid_mask = patch_validity(crop, grid)
             out_shape = grid.shape
-            transform = grid_transform(dataset.transform, grid, region.x0, region.y0, stride)
+            transform = pixel_transform(dataset.transform, region.x0, region.y0)
+            grid_meta = grid_metadata(grid, region.x0, region.y0, stride)
+            grid_meta["resolution"] = "patch-cells"
 
         result = classify_unsupervised_som(
             flat,
@@ -313,19 +356,32 @@ async def run_som_classification(
             random_state=settings.random_state,
         )
         cluster_labels = [c["label"] for c in result.clusters]
+        if payload.resolution == "pixel":
+            raster = result.cluster_map
+        else:
+            # Patch cells are painted over their true pixel windows on the source
+            # grid, exactly like supervised patch exports.
+            from ..services.inference_service import rasterize_cells
+
+            raster = rasterize_cells(
+                result.cluster_map,
+                valid_mask.reshape(grid.shape),
+                grid,
+                crop.shape[1],
+                crop.shape[2],
+            )
         export_som_geotiff(
             som_path,
-            result.cluster_map,
+            raster,
             cluster_labels,
             result.colors,
             dataset.crs,
             transform,
+            grid=grid_meta,
+            resolution="pixel" if payload.resolution == "pixel" else "patch-cells",
         )
-        if payload.resolution == "pixel":
-            import rasterio
-            window = (region.x0, region.y0, region.x1 - region.x0, region.y1 - region.y0)
-            with rasterio.open(dataset.path) as reference, rasterio.open(som_path) as output:
-                validate_grid_compatibility(reference, output, window=window)
+        window = (region.x0, region.y0, region.x1 - region.x0, region.y1 - region.y0)
+        validate_export_grid(dataset.path, (som_path,), window)
         return result
 
     try:
