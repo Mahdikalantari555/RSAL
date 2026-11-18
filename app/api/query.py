@@ -6,7 +6,6 @@ import anyio
 import numpy as np
 from fastapi import APIRouter, HTTPException
 
-from ..models import Dataset
 from ..schemas import QueryRequest, QueryResponse, QuerySample
 from ..services.al_service import (
     kcenter_greedy,
@@ -21,8 +20,8 @@ from ..services.raster_service import (
     RasterError,
     load_raster,
     make_grid,
-    parse_sample_id,
     patch_features,
+    patch_validity,
     pixel_to_map,
     sample_id,
 )
@@ -56,15 +55,7 @@ async def query_batch(
 
     run = await latest_run(session, project_id)
     checkpoint = checkpoint_or_409(run) if run is not None else None
-
-    if payload.strategy in ("uncertainty", "hybrid") and checkpoint is None:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Strategy '{payload.strategy}' requires a trained model. "
-                "Submit labels and POST /train, or use strategy='diversity' for cold start."
-            ),
-        )
+    notes: list[str] = []
 
     if checkpoint is not None and checkpoint["bands"] != dataset.bands:
         raise HTTPException(
@@ -75,23 +66,61 @@ async def query_batch(
             ),
         )
 
-    patch_size = payload.patch_size or (checkpoint["patch_size"] if checkpoint else settings.patch_size)
-    stride = payload.stride or (checkpoint["stride"] if checkpoint else settings.resolved_stride())
+    # Queries are patch-grid operations: embeddings are per-band patch
+    # statistics, so only a patch-feature checkpoint can score them. A pixel
+    # checkpoint would otherwise reach predict_proba with the wrong width and
+    # surface as an opaque 500.
+    model_checkpoint = checkpoint
+    if checkpoint is not None and checkpoint.get("resolution") != "patch":
+        if payload.strategy in ("uncertainty", "hybrid"):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Latest model (iteration {run.iteration}) was trained at "
+                    f"{checkpoint.get('resolution')} resolution, but active-learning "
+                    "queries rank patch embeddings. Retrain with "
+                    '{"resolution": "patch"} to query with model scores, or use '
+                    "strategy='diversity'/'som' which do not need a model."
+                ),
+            )
+        model_checkpoint = None
+        notes.append(
+            f"Latest model (iteration {run.iteration}) was trained at "
+            f"{checkpoint.get('resolution')} resolution, so it cannot score patch "
+            "embeddings; this batch was selected without model scores."
+        )
+
+    if model_checkpoint is None and payload.strategy in ("uncertainty", "hybrid"):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Strategy '{payload.strategy}' requires a trained model. "
+                "Submit labels and POST /train, or use strategy='diversity' for cold start."
+            ),
+        )
+
+    patch_size = payload.patch_size or (
+        model_checkpoint["patch_size"] if model_checkpoint else settings.patch_size
+    )
+    stride = payload.stride or (
+        model_checkpoint["stride"] if model_checkpoint else settings.resolved_stride()
+    )
 
     def _compute():
         arr = load_raster(dataset.path, dataset.nodata, settings.max_raster_elements)
         grid = make_grid(dataset.height, dataset.width, patch_size, stride)
         X = patch_features(arr, grid)
+        valid = patch_validity(arr, grid)
         probs = None
-        if checkpoint is not None:
-            model = checkpoint["model"]
+        if model_checkpoint is not None:
+            model = model_checkpoint["model"]
             raw = np.asarray(model.predict_proba(X))
             model_classes = [project.classes[int(c)] for c in model.classes_]
             probs = align_probabilities(raw, model_classes, project.classes)
-        return grid, X, probs
+        return grid, X, valid, probs
 
     try:
-        grid, X, probs = await anyio.to_thread.run_sync(_compute)
+        grid, X, valid, probs = await anyio.to_thread.run_sync(_compute)
     except RasterError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -112,16 +141,21 @@ async def query_batch(
         else payload.method
     )
 
+    # A patch with no valid source pixels has all-zero embeddings and would be
+    # ranked as maximally uncertain, so it must never enter the candidate pool.
     candidate_idx = [
-        i for i, sid in enumerate(all_sids)
-        if not (payload.exclude_labeled and sid in labeled_set)
+        i
+        for i, sid in enumerate(all_sids)
+        if valid[i] and not (payload.exclude_labeled and sid in labeled_set)
     ]
     if not candidate_idx:
         return QueryResponse(
             strategy=payload.strategy,
             method=method_used,
             batch_size=0,
-            model_iteration=run.iteration if run else None,
+            model_iteration=run.iteration if model_checkpoint is not None else None,
+            notes=notes
+            + ["No valid, unlabeled patches remain; upload another dataset or add labels."],
             samples=[],
         )
 
@@ -191,6 +225,7 @@ async def query_batch(
         strategy=payload.strategy,
         method=method_used,
         batch_size=len(samples),
-        model_iteration=run.iteration if run else None,
+        model_iteration=run.iteration if model_checkpoint is not None else None,
+        notes=notes,
         samples=samples,
     )

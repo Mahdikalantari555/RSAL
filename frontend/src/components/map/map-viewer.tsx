@@ -414,7 +414,15 @@ export function MapViewer({
               <span>MODEL LAYERS</span>
               {hasModel && (
                 <span className="layer-caption">
-                  1 cell = {classification.data?.grid.patchSize ?? dataset.patchGrid?.patchSize ?? 32} px
+                  {(() => {
+                    const field = classification.data ?? uncertainty.data;
+                    const cellPx = field?.grid.patchSize ?? dataset.patchGrid?.patchSize ?? 32;
+                    // A patch-cell field is one value per cell replicated over the
+                    // cell's pixels; saying "pixel-level" there would overclaim.
+                    return field?.resolution === 'pixel'
+                      ? `pixel-level · 1 cell = ${cellPx} px`
+                      : `patch cells · 1 cell = ${cellPx} px`;
+                  })()}
                 </span>
               )}
             </div>

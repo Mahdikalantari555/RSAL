@@ -179,6 +179,9 @@ class QueryResponse(BaseModel):
     method: str | None
     batch_size: int
     model_iteration: int | None
+    # Human-readable explanations of deliberate degradations (e.g. a pixel
+    # checkpoint that cannot score patch embeddings). Empty when none apply.
+    notes: list[str] = Field(default_factory=list)
     samples: list[QuerySample]
 
 
@@ -208,6 +211,16 @@ class MetricsOut(BaseModel):
     classes: list[str]
     evaluation: str
     evaluation_details: str | None = None
+    # Configuration behind the metrics, so a score is never context-free:
+    # `resolution` says which feature family produced it, `evaluation_strategy`
+    # whether a spatial or random holdout was requested, and the counts say how
+    # much data the score actually saw.
+    resolution: str = "patch"
+    evaluation_strategy: str | None = None
+    n_train: int | None = None
+    n_test: int | None = None
+    held_out_groups: int | None = None
+    per_class_iou: dict[str, float] = Field(default_factory=dict)
     created_at: datetime
 
 
@@ -216,6 +229,7 @@ class TrainResponse(BaseModel):
     project_id: int
     iteration: int
     model_type: str
+    resolution: str = "patch"
     checkpoint: str
     n_samples: int
     metrics: MetricsOut
@@ -243,12 +257,16 @@ class PredictResponse(BaseModel):
     dataset_id: int
     model_iteration: int
     classes: list[str]
+    # "pixel" = one independent prediction per source pixel; "patch" = one
+    # prediction per patch cell (see grid/patch_size/stride).
+    resolution: str = "patch"
     region: Region
     grid_shape: list[int]  # [rows, cols] of the patch grid
     patch_size: int
     stride: int
     hard_map: list[list[int]] | None = None
-    probability_map: list[list[list[float]]] | None = None  # [class][row][col]
+    # [class][row][col]; None where the cell has no valid source pixels.
+    probability_map: list[list[list[float | None]]] | None = None
     uncertainty_map: list[list[float | None]] | None = None  # per-patch, 0..1
     uncertainty_method: str | None = None
     valid_map: list[list[bool]] | None = None  # False = patch has no valid pixels
@@ -275,6 +293,7 @@ class MapFieldOut(BaseModel):
     model_iteration: int
     training_run_id: int
     classes: list[str]
+    resolution: str = "patch"
     grid: MapGridOut
     # rows x cols; class indices for `hard`, 0..1 floats (None where invalid)
     # for `uncertainty`.
@@ -343,11 +362,18 @@ class SomResponse(BaseModel):
     cols: int
     epochs: int
     total_patches: int
+    # Patches with at least one valid source pixel; the rest are nodata and are
+    # excluded from the fit, the hit grid and every cell's sample list.
+    valid_patches: int = 0
+    nodata_patches: int = 0
     labeled_patches: int
     active_neurons: int
     quantization_error: float
     topographic_error: float
     model_iteration: int | None = None
+    # Why supervised annotations are absent, when a checkpoint exists but cannot
+    # annotate patch cells (band-count or resolution mismatch).
+    model_note: str | None = None
     bands: int
     classes: list[str]
     u_matrix: list[list[float]]

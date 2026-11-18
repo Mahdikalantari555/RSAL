@@ -16,6 +16,7 @@ router = APIRouter(prefix="/projects/{project_id}", tags=["training"])
 
 def run_to_metrics_out(run: TrainingRun) -> MetricsOut:
     m = run.metrics
+    params = run.params or {}
     return MetricsOut(
         id=run.id,
         project_id=run.project_id,
@@ -30,6 +31,12 @@ def run_to_metrics_out(run: TrainingRun) -> MetricsOut:
         classes=run.classes,
         evaluation=m.get("evaluation", "insufficient_train_metrics"),
         evaluation_details=m.get("evaluation_warning"),
+        resolution=params.get("resolution", m.get("resolution", "patch")),
+        evaluation_strategy=m.get("evaluation_strategy", params.get("evaluation_strategy")),
+        n_train=m.get("n_train", run.n_samples),
+        n_test=m.get("n_test"),
+        held_out_groups=m.get("held_out_groups"),
+        per_class_iou=m.get("per_class_iou", {}),
         created_at=run.created_at,
     )
 
@@ -57,6 +64,7 @@ async def train(project_id: int, payload: TrainRequest, session: SessionDep, set
         project_id=run.project_id,
         iteration=run.iteration,
         model_type=run.model_type,
+        resolution=(run.params or {}).get("resolution", "patch"),
         checkpoint=run.checkpoint_path,
         n_samples=run.n_samples,
         metrics=run_to_metrics_out(run),

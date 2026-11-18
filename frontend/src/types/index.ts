@@ -93,6 +93,9 @@ export interface LabelInput {
   lng?: number;
   geometry?: SampleGeometry | null;
   pixel?: { x: number; y: number };
+  /** Set to "pixel" when the project trains at pixel resolution, so distinct
+   * points inside one patch keep distinct sample identities. */
+  sampleResolution?: 'pixel' | 'patch';
 }
 export interface Iteration {
   id: string;
@@ -147,6 +150,9 @@ export interface MapField {
   modelIteration: number;
   trainingRunId: number;
   classes: string[];
+  /** "pixel" = one independent prediction per source pixel; "patch" = one per
+   * patch cell (block-filled over its pixel window, not per-pixel inference). */
+  resolution: 'pixel' | 'patch';
   /** Class colours from the backend palette (same colours the exports use). */
   colors: string[];
   grid: { rows: number; cols: number; patchSize: number; stride: number };

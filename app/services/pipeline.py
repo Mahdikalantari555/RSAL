@@ -203,9 +203,25 @@ def training_error_to_http(exc: TrainingError) -> HTTPException:
 
 
 def checkpoint_or_409(run: TrainingRun) -> dict:
-    from .training_service import load_checkpoint
+    from .training_service import CheckpointError, load_checkpoint
 
     path = Path(run.checkpoint_path)
     if not path.exists():
         raise HTTPException(status_code=409, detail=f"Checkpoint missing on disk: {path.name}")
-    return load_checkpoint(path)
+    try:
+        checkpoint = load_checkpoint(path)
+    except CheckpointError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Training run {run.iteration} has an unusable checkpoint: {exc} Retrain the project.",
+        ) from exc
+    if checkpoint.get("classes") != list(run.classes):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Checkpoint class order for iteration {run.iteration} does not match the "
+                "run's recorded classes; refusing to label predictions with the wrong "
+                "class names. Retrain the project."
+            ),
+        )
+    return checkpoint

@@ -67,9 +67,12 @@ Browser ── /api/* (Next.js route handlers = BFF adapter) ── RSAL_API_URL
 Once a project has a checkpoint, the map can show what the model thinks about
 the scene on screen:
 
-- **Classification** — one flat colour per patch cell, from the shared class
-  palette (`lib/palette.ts`, identical to the backend's `CLASS_PALETTE`).
-  Individual classes can be hidden, which is how you check one class at a time.
+- **Classification** — one flat colour per cell, from the shared class palette
+  (`lib/palette.ts`, identical to the backend's `CLASS_PALETTE`). The layer panel
+  states whether the field is *pixel-level* (one prediction per source pixel) or
+  *patch cells* (one value per patch, block-filled), together with the cell size,
+  so a cell map is never read as per-pixel inference. Individual classes can be
+  hidden, which is how you check one class at a time.
 - **Uncertainty** — the scalar field from `al_service.uncertainty_scores`
   (`entropy`, `margin` or `least_confidence`), painted on a cool→warm ramp.
   The ramp is stretched over the field's own min/max because a trained model's
@@ -111,7 +114,7 @@ cd frontend
 npm install
 cp .env.example .env.local        # optional; defaults to http://localhost:8000
 npm run dev                       # http://localhost:3000
-npm test                          # geo + overlay unit tests (node:test)
+npm test                          # geo, overlay and adapter-payload tests (node:test)
 npm run typecheck && npm run lint
 ```
 

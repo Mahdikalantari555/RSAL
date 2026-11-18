@@ -1,29 +1,66 @@
 # RSAL stabilization audit
 
-## Confirmed bugs fixed
-- Added a supervised pixel resolution alongside legacy patch mode. Pixel models use per-pixel spectral vectors, exact row-major alignment, block-wise source reads, strict all-band input validity and direct per-pixel prediction. They do not upsample patch outputs.
-- Pixel hard/probability/uncertainty exports inherit the reference/window affine and are reopened and checked for width, height, CRS, affine/pixel size and bounds. Invalid class pixels use the class NoData sentinel; probability NoData is explicit. Categorical maps are never interpolated.
-- Legacy patch validity sampled every fourth pixel and could miss valid sparse pixels. It now checks full validity; training and unsupervised patch SOM exclude fully invalid patches.
-- `load_raster` ignored GDAL masks. Reads now honor band masks in addition to explicit NoData.
-- Pixel labels previously shared patch IDs and distinct points in one patch could overwrite. `sample_resolution: pixel` creates per-pixel point IDs. Pixel polygons target pixel centers.
-- Out-of-bounds points and malformed/non-finite/unclosed/self-intersecting polygon rings are rejected. A label may optionally declare `coordinate_crs` for reprojection into the dataset CRS; legacy `map` labels continue to mean dataset CRS.
-- Evaluation previously only used random patch holdout and otherwise reported fit scores as `train`. Spatial-group holdout, per-class IoU, recorded evaluation configuration/seed/datasets and a clear insufficient-independent-data response are now supported.
-- Right-side sample-review thumbnails used a CSS background sized `100% 100%`, distorting crops whose aspect ratio differed from the fixed card. They now use a contained image preserving intrinsic raster aspect ratio and no longer draw a misleading border around letterbox space.
+This file tracks the audit trail. The current change is
+[`openspec/changes/stabilize-post-merge/`](openspec/changes/stabilize-post-merge/):
+its `audit.md` lists every reproduced defect (D1–D16), and its
+`verification.md` records the executed commands, results and residual risk.
 
-## Data-flow findings and pipeline distinctions
-- Supervised legacy patch path: label geometry -> patch ID -> per-band mean/std/min/max -> RF/LightGBM -> one prediction per patch cell -> legacy patch-lattice exports.
-- Supervised pixel path: point/polygon labels -> pixel indices -> raw band values -> RF/LightGBM -> one prediction per source pixel -> source-grid GeoTIFFs.
-- Active-learning queries and SOM explorer remain patch-oriented. Unsupervised SOM classification is a separate route: it supports pixel (default) or patch values, validates pixel output against the reference window, and uses patch validity rather than classifying all-NoData patches.
-- No observed endpoint default was silently shifted: patch supervised training remains the default. `resolution=pixel` is explicit.
+## Status of the previous (merged) stabilization
 
-## Remaining limitations / review notes
-- Legacy patch exports remain intentionally patch-grid products and do not match the source grid dimensions. Consumers needing reference-aligned rasters must train/use pixel mode. The patch export still has its documented clamped-edge lattice semantics.
-- Pixel inference reads the source in 256×256 windows, but full output probability arrays are still retained because the current API/export path returns full maps. The synchronous element guard remains. Full streaming GeoTIFF inference is future work.
-- Spatial blocks are fixed at 256 source pixels and may not represent the domain's autocorrelation distance. Insufficient splits are explicitly marked.
-- Ring self-intersection checks do not perform full OGC topology validation between holes and shells. CRS transformation errors are caught, but callers should supply the actual CRS.
-- Pixel RF and LightGBM have regression coverage. The unsupervised SOM still uses full-array loading and its `any valid band` policy with per-band imputation for partially masked pixels; consider stricter semantics for a target domain.
-- Automated frontend dependency inventory found custom Esri/amCharts terms, a Hippocratic-2.1 license declaration in React-Leaflet packages, LGPL-3.0-or-later Sharp/libvips optional native binaries, and several content/dual licenses. See `THIRD_PARTY_LICENSES.md`; legal review of the actual distributed tree remains necessary. `npm ci` also reported 29 security advisories (10 moderate, 19 high); these are not license findings and need separate triage.
+Still true, and covered by tests: pixel mode uses per-pixel spectral vectors with
+exact row-major alignment and block-wise reads; strict all-band validity; direct
+per-pixel prediction with no upsampling; pixel exports inherit the reference
+window affine and are reopened and compared; patch validity scans every pixel;
+GDAL band masks are honoured; pixel sample ids exist for point labels; spatial
+group holdout, per-class IoU and an explicit insufficient-data response exist.
 
-## Verification
-- Python: 139 passed in the full suite. Rasterio/Starlette/Pillow deprecation warnings remain.
-- Frontend: `npm run typecheck`, `npm run lint`, `npm test` (21 passed), and `npm run build` passed. Lint reports 7 existing warnings; no lint errors.
+Corrections to the previous report:
+
+- The claim that patch exports are a "documented clamped-edge lattice" hid a real
+  georeferencing defect: the lattice cannot represent clamped cells, so edge
+  cells were displaced by up to one stride and exports overhung the source
+  extent. Patch exports are now painted on the source grid (D1).
+- `total_patches`/hit counts in the SOM explorer silently included nodata patches
+  (D5, D13).
+- "139 Python tests" was accurate at the time of that report; the counts in
+  `README.md` (82) were stale and are corrected to 158.
+
+## What this change fixed (verified)
+
+- Patch GeoTIFF exports: exact source-grid geometry, atomic writes, reopen
+  validation, `grid`/`resolution` tags; stride gaps are nodata.
+- One validity mask across hard/probability/uncertainty, in JSON and on disk.
+- `/query`: 409 for pixel-resolution checkpoints with uncertainty/hybrid,
+  explicit degraded mode for diversity/SOM, and no nodata patches in any batch.
+- SOM explorer: valid patches only; incompatible checkpoints reported instead of
+  HTTP 500; pixel-mode SOM uses strict all-band validity; SOM exports land on the
+  source grid.
+- Checkpoints: `rsal-checkpoint-v2` with feature schema/count and class-order
+  validation; legacy v1 accepted only as patch; actionable 409s.
+- API: `resolution` on predict/map/train/metrics; evaluation context in metrics;
+  downloads never serve an artifact from a previous run without saying so.
+- Frontend: adapter forwards training options and `sample_resolution`; the map
+  states pixel vs patch cells.
+- Docs and licensing: README/AUDIT corrected, third-party inventory rewritten
+  with dependency paths and the actual LGPL surface; `postcss` upgraded.
+
+## Verification executed (2026-11-18)
+
+- Backend: `pytest` → **158 passed** (baseline before the change: 139 passed).
+- Frontend: `npm test` → **25 passed**; `npm run typecheck` clean;
+  `npm run lint` → 0 errors (7 pre-existing warnings); `npm run build` succeeded.
+- `npm audit`: 29 advisories (10 moderate / 19 high) → 28 (10 / 18).
+- `pip-audit -r requirements.lock.txt` and `-r requirements-dev.txt`: no known
+  vulnerabilities.
+
+## Still open / deliberately deferred
+
+- `deck.gl` (loaders.gl/luma.gl/image-size) and `eslint-config-next`
+  (fast-glob/picomatch/micromatch) advisories: only resolvable by semver-major or
+  downgrade changes. Triage and reachability documented in
+  `THIRD_PARTY_LICENSES.md`.
+- Licensing review of LGPL `sharp`/libvips binaries, Esri terms, amCharts terms
+  and Hippocratic-2.1 React-Leaflet.
+- Streaming pixel inference and buffered (non-block-boundary) spatial validation.
+- OGC polygon topology validation; label `sample_id` forgery hardening.
+- Pixel-mode training is API-only; the workspace trains patch models.
